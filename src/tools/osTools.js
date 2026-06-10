@@ -19,14 +19,6 @@ function runPowerShell(script) {
     });
 }
 
-async function findRunning(appName, { fuzzy = false } = {}) {
-    const target = appName.toLowerCase().replace(/\.exe$/, "");
-    const procs = await psList();
-    const exact = procs.filter(p => p.name.toLowerCase().replace(/\.exe$/, "") === target);
-    if (exact.length || !fuzzy) return exact;
-    return procs.filter(p => p.name.toLowerCase().includes(target));
-}
-
 export async function openApplication(appName) {
     const { platform } = getSystemInfo().result.system;
 
@@ -75,6 +67,14 @@ if ($app) { "UWP|$($app.AppID)"; exit }
     }
 
     return { success: false, result: `Could not find an application matching "${appName}". It may not be installed.` };
+}
+
+async function findRunning(appName, { fuzzy = false } = {}) {
+    const target = appName.toLowerCase().replace(/\.exe$/, "");
+    const procs = await psList();
+    const exact = procs.filter(p => p.name.toLowerCase().replace(/\.exe$/, "") === target);
+    if (exact.length || !fuzzy) return exact;
+    return procs.filter(p => p.name.toLowerCase().includes(target));
 }
 
 export async function closeApplication(appName) {

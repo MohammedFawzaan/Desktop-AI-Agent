@@ -13,7 +13,20 @@ const IGNORE = [
     "**/.cache/**",
 ];
 
+const MAX_READ_BYTES = 100 * 1024;
+
 const toPosix = (p) => p.replace(/\\/g, "/");
+
+async function globIn(dir, pattern) {
+    return fg(pattern, {
+        cwd: toPosix(dir),
+        absolute: true,
+        caseSensitiveMatch: false,
+        suppressErrors: true,
+        ignore: IGNORE,
+        dot: false,
+    });
+}
 
 function resolveDirectory(directory) {
     const { paths } = getSystemInfo().result;
@@ -34,15 +47,21 @@ function resolveDirectory(directory) {
     return path.join(paths.home, directory);
 }
 
-async function globIn(dir, pattern) {
-    return fg(pattern, {
-        cwd: toPosix(dir),
-        absolute: true,
-        caseSensitiveMatch: false,
-        suppressErrors: true,
-        ignore: IGNORE,
-        dot: false,
-    });
+function resolvePath(target) {
+    return path.isAbsolute(target)
+        ? target
+        : path.join(resolveDirectory(path.dirname(target)), path.basename(target));
+}
+
+async function resolveExistingPath(target) {
+    const direct = resolvePath(target);
+    try {
+        await fs.access(direct);
+        return direct;
+    } catch {
+        const found = await globIn(resolveDirectory(undefined), `**/${path.basename(target)}`);
+        return found[0] || null;
+    }
 }
 
 export async function searchFiles(pattern, directory) {
@@ -123,6 +142,94 @@ export async function openFile(target) {
 
         await open(resolved);
         return { success: true, result: `Opened ${resolved}` };
+    } catch (error) {
+        return { success: false, result: error.message };
+    }
+}
+
+export async function readFile(filePath) {
+    try {
+        const resolved = await resolveExistingPath(filePath);
+        if (!resolved) return { success: false, result: `File not found: ${filePath}` };
+
+        const stat = await fs.stat(resolved);
+        if (stat.isDirectory()) return { success: false, result: `${resolved} is a directory, not a file.` };
+
+        const content = await fs.readFile(resolved, "utf8");
+        if (content.length > MAX_READ_BYTES) {
+            return {
+                success: true,
+                result: `${resolved} (showing first ${MAX_READ_BYTES} of ${content.length} chars):\n${content.slice(0, MAX_READ_BYTES)}`,
+            };
+        }
+        return { success: true, result: `${resolved}:\n${content}` };
+    } catch (error) {
+        return { success: false, result: error.message };
+    }
+}
+
+export async function listDirectory(directory) {
+    try {
+        const resolved = resolveDirectory(directory);
+        const entries = await fs.readdir(resolved, { withFileTypes: true });
+
+        if (entries.length === 0) return { success: true, result: `${resolved} is empty.` };
+
+        const folders = entries.filter(e => e.isDirectory()).map(e => `[dir]  ${e.name}`);
+        const files = entries.filter(e => e.isFile()).map(e => `       ${e.name}`);
+        const listing = [...folders, ...files];
+
+        return {
+            success: true,
+            result: `${resolved} (${entries.length} item(s)):\n${listing.slice(0, 100).join("\n")}${listing.length > 100 ? `\n...and ${listing.length - 100} more` : ""}`,
+        };
+    } catch (error) {
+        return { success: false, result: error.message };
+    }
+}
+
+export async function deleteFile(filePath) {
+    try {
+        const resolved = await resolveExistingPath(filePath);
+        if (!resolved) return { success: false, result: `File not found: ${filePath}` };
+
+        await fs.rm(resolved, { recursive: true, force: true });
+        return { success: true, result: `Deleted ${resolved}` };
+    } catch (error) {
+        return { success: false, result: error.message };
+    }
+}
+
+export async function moveFile(source, destination) {
+    try {
+        const src = await resolveExistingPath(source);
+        if (!src) return { success: false, result: `Source not found: ${source}` };
+
+        const dest = resolvePath(destination);
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+
+        try {
+            await fs.rename(src, dest);
+        } catch (err) {
+            if (err.code !== "EXDEV") throw err;
+            await fs.copyFile(src, dest);
+            await fs.rm(src, { force: true });
+        }
+        return { success: true, result: `Moved ${src} -> ${dest}` };
+    } catch (error) {
+        return { success: false, result: error.message };
+    }
+}
+
+export async function copyFile(source, destination) {
+    try {
+        const src = await resolveExistingPath(source);
+        if (!src) return { success: false, result: `Source not found: ${source}` };
+
+        const dest = resolvePath(destination);
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        await fs.copyFile(src, dest);
+        return { success: true, result: `Copied ${src} -> ${dest}` };
     } catch (error) {
         return { success: false, result: error.message };
     }

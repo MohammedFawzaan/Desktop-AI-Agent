@@ -1,10 +1,10 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { openApplication, closeApplication } from "../tools/osTools.js";
-import { searchFiles, writeFile, openFile } from "../tools/fileTools.js";
+import { searchFiles, writeFile, openFile, readFile, listDirectory, deleteFile, moveFile, copyFile } from "../tools/fileTools.js";
 import { runCommand } from "../tools/terminalTools.js";
 import { getSystemInfo, getRunningProcesses } from "../tools/systemTools.js";
-import { takeScreenshot, clickAt, typeText, pressKey } from "../tools/automationTools.js";
+import { takeScreenshot, clickAt, typeText, pressKey, getClipboard, setClipboard, getActiveWindow } from "../tools/automationTools.js";
 
 const stringify = (result) => JSON.stringify(result);
 
@@ -48,6 +48,48 @@ export const tools = [
         description: "Open a file or URL in its default application (e.g. a PDF in the PDF viewer, an image in the photo viewer, or a webpage in the browser). Accepts a full path, a filename (searched in common folders), or an http(s) URL.",
         schema: z.object({
             target: z.string().describe("File path, filename, or URL to open"),
+        }),
+    }),
+
+    tool(async ({ filePath }) => stringify(await readFile(filePath)), {
+        name: "read_file",
+        description: "Read and return the text contents of a file. Use this to answer questions about a file or before editing it. Accepts a full path or a filename (searched in common folders).",
+        schema: z.object({
+            filePath: z.string().describe("Full path or filename of the file to read"),
+        }),
+    }),
+
+    tool(async ({ directory }) => stringify(await listDirectory(directory)), {
+        name: "list_directory",
+        description: "List the files and subfolders inside a directory. Accepts a named folder ('desktop', 'documents', 'downloads') or a full path. Omit to list the home folder.",
+        schema: z.object({
+            directory: z.string().optional().describe("Folder name or full path. Omit for the home directory."),
+        }),
+    }),
+
+    tool(async ({ filePath }) => stringify(await deleteFile(filePath)), {
+        name: "delete_file",
+        description: "Permanently delete a file or folder. Accepts a full path or a filename (searched in common folders).",
+        schema: z.object({
+            filePath: z.string().describe("Full path or filename to delete"),
+        }),
+    }),
+
+    tool(async ({ source, destination }) => stringify(await moveFile(source, destination)), {
+        name: "move_file",
+        description: "Move or rename a file. To rename, give the same folder with a new filename. Accepts full paths or filenames.",
+        schema: z.object({
+            source: z.string().describe("Existing file path or filename"),
+            destination: z.string().describe("New path or filename"),
+        }),
+    }),
+
+    tool(async ({ source, destination }) => stringify(await copyFile(source, destination)), {
+        name: "copy_file",
+        description: "Copy a file to a new location or name. Accepts full paths or filenames.",
+        schema: z.object({
+            source: z.string().describe("Existing file path or filename"),
+            destination: z.string().describe("Destination path or filename"),
         }),
     }),
 
@@ -104,5 +146,25 @@ export const tools = [
         schema: z.object({
             keys: z.array(z.string()).describe("Keys to press together. Modifiers: ctrl, alt, shift, win. Others: enter, tab, esc, space, backspace, delete, up/down/left/right, home, end, a-z, 0-9, f1-f12."),
         }),
+    }),
+
+    tool(async () => stringify(await getClipboard()), {
+        name: "get_clipboard",
+        description: "Read the current text contents of the system clipboard.",
+        schema: z.object({}),
+    }),
+
+    tool(async ({ text }) => stringify(await setClipboard(text)), {
+        name: "set_clipboard",
+        description: "Write text to the system clipboard so the user can paste it.",
+        schema: z.object({
+            text: z.string().describe("The text to copy to the clipboard"),
+        }),
+    }),
+
+    tool(async () => stringify(await getActiveWindow()), {
+        name: "get_active_window",
+        description: "Get the title and owning app of the window the user is currently focused on. Use to understand what the user is looking at before acting.",
+        schema: z.object({}),
     }),
 ];

@@ -1,8 +1,9 @@
 import path from "path";
 import {
-    mouse, keyboard, screen,
+    mouse, keyboard, screen, clipboard,
     Point, Button, Key, FileType,
 } from "@nut-tree-fork/nut-js";
+import activeWindow from "active-win";
 import { getSystemInfo } from "./systemTools.js";
 
 mouse.config.autoDelayMs = 100;
@@ -80,6 +81,37 @@ export async function pressKey(keys) {
         await keyboard.pressKey(...resolved);
         await keyboard.releaseKey(...resolved.reverse());
         return { success: true, result: `Pressed: ${list.join("+")}` };
+    } catch (error) {
+        return { success: false, result: error.message };
+    }
+}
+
+export async function getClipboard() {
+    try {
+        const content = await clipboard.getContent();
+        return { success: true, result: content ? `Clipboard:\n${content}` : "Clipboard is empty." };
+    } catch (error) {
+        return { success: false, result: error.message };
+    }
+}
+
+export async function setClipboard(text) {
+    try {
+        await clipboard.setContent(text);
+        return { success: true, result: `Copied to clipboard: "${text}"` };
+    } catch (error) {
+        return { success: false, result: error.message };
+    }
+}
+
+export async function getActiveWindow() {
+    try {
+        const win = await activeWindow();
+        if (!win) return { success: true, result: "No active window detected." };
+        return {
+            success: true,
+            result: `Active window: "${win.title}" — ${win.owner?.name || "unknown app"} (PID ${win.owner?.processId ?? "?"})`,
+        };
     } catch (error) {
         return { success: false, result: error.message };
     }
