@@ -1,3 +1,12 @@
-/node_modules
-/dist
 .env
+err.logs
+cli.logs
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.pyright/
+dist/
+runs/
+sandbox/
