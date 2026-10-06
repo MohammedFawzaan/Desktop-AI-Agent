@@ -70,11 +70,14 @@ class Agent:
         self._budget = budget or Budget()
         self._sink = sink or NullSink()
 
-    async def run(self, goal: str, *, session: Sequence[SessionTurn] = ()) -> RunResult:
+    async def run(
+        self, goal: str, *, session: Sequence[SessionTurn] = (), voice: bool = False
+    ) -> RunResult:
         state = RunState(
             goal=goal,
             run_id=uuid.uuid4().hex[:8],
             session=tuple(session),
+            voice=voice,
         )
         self._emit(state, "run_started", goal=goal)
         try:
@@ -95,9 +98,14 @@ class Agent:
         verdict: Verdict | None = None
 
         while True:
-            self._emit(state, "phase", phase=phase.value)
+            if phase is not Phase.PLAN:  # planning is announced only once we know it is a task
+                self._emit(state, "phase", phase=phase.value)
             match phase:
                 case Phase.PLAN:
+                    if state.replans:
+                        self._emit(state, "phase", phase="plan")
+                    else:
+                        self._emit(state, "thinking")
                     await self._plan(state)
                     plan = state.require_plan()
                     if not plan.steps:
@@ -152,12 +160,16 @@ class Agent:
             system=prompts.PLAN_SYSTEM,
             contents=[user_text(prompts.plan_prompt(state, self._tools.describe()))],
             schema=Plan,
-            thinking=Thinking.HIGH if state.replans else Thinking.MEDIUM,
+            thinking=Thinking.HIGH if state.replans else Thinking.LOW,
             purpose="replan" if state.replans else "plan",
         )
         state.plan = plan
         state.step_index = 0
         state.step_attempts = 0
+        if not plan.steps:  # a plain answer: nothing to announce
+            return
+        if not state.replans:
+            self._emit(state, "phase", phase="plan")
         self._emit(
             state,
             "plan",
@@ -283,6 +295,7 @@ class Agent:
             earlier=[(r.description, r.evidence) for r in state.completed],
             goal=state.goal if is_last else "",
             success_criteria=plan.success_criteria if is_last else "",
+            voice=state.voice,
         )
         specs = self._tools.specs(read_only=True)
         if not specs or self._budget.verify_probes <= 0:

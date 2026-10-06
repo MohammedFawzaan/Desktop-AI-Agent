@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import httpx
 from google import genai
@@ -28,6 +28,12 @@ from desktop_ai_agent.llm.base import (
     TransientLLMError,
     Usage,
 )
+
+_STT_PROMPT = (
+    "Transcribe the speech in this audio verbatim. Output only the transcript, nothing else. "
+    "If there is no intelligible speech, output exactly: <silence>"
+)
+_NO_SPEECH = {"silence", "no speech"}
 
 # The SDK warns about AFC on every call even though we never pass Python callables.
 logging.getLogger("google_genai.models").setLevel(logging.ERROR)
@@ -107,6 +113,76 @@ def _parse(resp: types.GenerateContentResponse, model: str) -> LLMResponse:
     return LLMResponse(cand.content, text, tuple(calls), CallInfo(usage, model))
 
 
+R = TypeVar("R")
+
+
+def _rate_from_mime(mime: str | None) -> int:
+    """'audio/l16; codec=pcm; rate=24000' -> 24000 (the TTS models default to 24 kHz)."""
+    for part in (mime or "").split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == "rate" and value.isdigit():
+            return int(value)
+    return 24_000
+
+
+def _audio_of(resp: types.GenerateContentResponse) -> tuple[bytes, str | None] | None:
+    cand = resp.candidates[0] if resp.candidates else None
+    for part in (cand.content.parts if cand and cand.content else None) or []:
+        if part.inline_data is not None and part.inline_data.data:
+            return part.inline_data.data, part.inline_data.mime_type
+    return None
+
+
+def _usage_of(resp: types.GenerateContentResponse) -> Usage | None:
+    meta = resp.usage_metadata
+    if meta is None:
+        return None
+    return Usage(
+        meta.prompt_token_count or 0,
+        meta.candidates_token_count or 0,
+        meta.thoughts_token_count or 0,
+    )
+
+
+class TtsStream:
+    """16-bit mono PCM from the text-to-speech model, handed over while it is still generating."""
+
+    def __init__(
+        self,
+        *,
+        first: bytes,
+        sample_rate: int,
+        rest: AsyncIterator[types.GenerateContentResponse],
+        model: str,
+        started: float,
+        usage: Usage | None,
+    ) -> None:
+        self.sample_rate = sample_rate
+        self.first_audio_s = time.monotonic() - started
+        self._first = first
+        self._rest = rest
+        self._model = model
+        self._started = started
+        self._usage = usage or Usage()
+        self._finished: float | None = None
+
+    @property
+    def info(self) -> CallInfo:
+        end = self._finished if self._finished is not None else time.monotonic()
+        return CallInfo(self._usage, self._model, end - self._started)
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        yield self._first
+        async for resp in self._rest:
+            usage = _usage_of(resp)
+            if usage is not None:
+                self._usage = usage
+            audio = _audio_of(resp)
+            if audio is not None:
+                yield audio[0]
+        self._finished = time.monotonic()
+
+
 class GeminiLLM:
     """Gemini client with per-request timeouts, retries, and model fallback.
 
@@ -120,6 +196,9 @@ class GeminiLLM:
         model: str,
         *,
         fallback_models: Sequence[str] = (),
+        stt_models: Sequence[str] = (),
+        tts_models: Sequence[str] = (),
+        tts_voice: str = "Kore",
         attempts_per_model: int = 2,
         request_timeout_s: float = 30.0,
         cooldown_s: float = 60.0,
@@ -128,6 +207,9 @@ class GeminiLLM:
             api_key=api_key, http_options=types.HttpOptions(timeout=int(request_timeout_s * 1000))
         )
         self._chain = [model, *fallback_models]
+        self._stt_chain = list(stt_models)
+        self._tts_chain = list(tts_models)
+        self._tts_voice = tts_voice
         self._attempts = attempts_per_model
         self._cooldown_s = cooldown_s
         self._cooling_until: dict[str, float] = {}
@@ -138,10 +220,10 @@ class GeminiLLM:
             thinking_config=types.ThinkingConfig(thinking_level=_LEVELS[thinking]),
         )
 
-    def _order(self) -> list[str]:
+    def _order(self, chain: Sequence[str]) -> list[str]:
         now = time.monotonic()
-        healthy = [m for m in self._chain if self._cooling_until.get(m, 0.0) <= now]
-        cooling = [m for m in self._chain if m not in healthy]
+        healthy = [m for m in chain if self._cooling_until.get(m, 0.0) <= now]
+        cooling = [m for m in chain if m not in healthy]
         return healthy + cooling
 
     async def _attempt(
@@ -160,16 +242,12 @@ class GeminiLLM:
                 return _parse(resp, model)
         raise LLMError("unreachable")
 
-    async def _request(
-        self, contents: Sequence[types.Content], config: types.GenerateContentConfig
-    ) -> LLMResponse:
+    async def _across(self, chain: Sequence[str], run: Callable[[str], Awaitable[R]]) -> R:
+        """Run `run(model)` down the fallback chain, cooling down models that are unavailable."""
         failures: list[str] = []
-        started = time.monotonic()
-        for model in self._order():
+        for model in self._order(chain):
             try:
-                resp = await self._attempt(model, contents, config)
-                info = replace(resp.info, latency_s=time.monotonic() - started)
-                return replace(resp, info=info)
+                return await run(model)
             except LLMError as exc:
                 if not isinstance(exc, TransientLLMError):
                     raise
@@ -182,6 +260,21 @@ class GeminiLLM:
                 cooldown = _cooldown_for(exc, self._cooldown_s)
             self._cooling_until[model] = time.monotonic() + cooldown
         raise LLMError("All models unavailable. " + " | ".join(failures))
+
+    async def _request(
+        self,
+        contents: Sequence[types.Content],
+        config: types.GenerateContentConfig,
+        chain: Sequence[str] | None = None,
+    ) -> LLMResponse:
+        started = time.monotonic()
+
+        async def run(model: str) -> LLMResponse:
+            resp = await self._attempt(model, contents, config)
+            info = replace(resp.info, latency_s=time.monotonic() - started)
+            return replace(resp, info=info)
+
+        return await self._across(chain or self._chain, run)
 
     async def generate(
         self,
@@ -226,3 +319,81 @@ class GeminiLLM:
             except ValidationError as exc:
                 last_error = exc
         raise LLMError(f"Model returned invalid {schema.__name__} JSON: {last_error}")
+
+    # ---- voice ------------------------------------------------------------------------------
+
+    async def transcribe(self, wav: bytes) -> tuple[str, CallInfo]:
+        """Speech to text. Returns an empty string when there is no intelligible speech."""
+        if not self._stt_chain:
+            raise LLMError("No speech-to-text model configured.")
+        content = types.Content(
+            role="user",
+            parts=[
+                types.Part.from_bytes(data=wav, mime_type="audio/wav"),
+                types.Part(text=_STT_PROMPT),
+            ],
+        )
+        resp = await self._request(
+            [content],
+            self._config("You are a precise speech transcriber.", Thinking.LOW),
+            self._stt_chain,
+        )
+        text = resp.text.strip()
+        return ("" if text.lower().strip("<>[]. ") in _NO_SPEECH else text), resp.info
+
+    def _tts_config(self) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._tts_voice)
+                )
+            ),
+        )
+
+    async def synthesize(self, text: str) -> tuple[bytes, CallInfo]:
+        """Text to speech, whole file at once (WAV). Prefer `synthesize_stream` for latency."""
+        if not self._tts_chain:
+            raise LLMError("No text-to-speech model configured.")
+        content = types.Content(role="user", parts=[types.Part(text=text)])
+        resp = await self._request([content], self._tts_config(), self._tts_chain)
+        for part in resp.content.parts or []:
+            if part.inline_data is not None and part.inline_data.data:
+                return part.inline_data.data, resp.info
+        raise LLMError("The text-to-speech model returned no audio.")
+
+    async def synthesize_stream(self, text: str) -> TtsStream:
+        """Text to speech that can start playing after the first ~1 s instead of after all of it."""
+        if not self._tts_chain:
+            raise LLMError("No text-to-speech model configured.")
+        content = types.Content(role="user", parts=[types.Part(text=text)])
+        config = self._tts_config()
+
+        async def open_stream(model: str) -> TtsStream:
+            started = time.monotonic()
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(self._attempts),
+                wait=wait_exponential_jitter(initial=0.5, max=4),
+                retry=retry_if_exception(_is_retryable),
+                reraise=True,
+            ):
+                with attempt:
+                    stream = await self._client.aio.models.generate_content_stream(  # pyright: ignore[reportUnknownMemberType]
+                        model=model, contents=[content], config=config
+                    )
+                    iterator = stream.__aiter__()
+                    async for resp in iterator:
+                        audio = _audio_of(resp)
+                        if audio is not None:
+                            return TtsStream(
+                                first=audio[0],
+                                sample_rate=_rate_from_mime(audio[1]),
+                                rest=iterator,
+                                model=model,
+                                started=started,
+                                usage=_usage_of(resp),
+                            )
+                    raise TransientLLMError("The text-to-speech stream ended without audio.")
+            raise LLMError("unreachable")
+
+        return await self._across(self._tts_chain, open_stream)

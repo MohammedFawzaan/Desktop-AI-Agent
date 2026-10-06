@@ -3,8 +3,12 @@ from __future__ import annotations
 from desktop_ai_agent.agent.state import ActionRecord, RunState
 
 PLAN_SYSTEM = """You are Friday, an AI agent that works on the user's own Windows PC.
-If the message needs no tools (a greeting, a question you can answer, small talk), put the full
-reply in direct_answer and leave steps empty. Otherwise turn the goal into the FEWEST steps
+FIRST decide whether the message needs the PC at all. Greetings, small talk, facts, explanations,
+advice, opinions, maths, coding or concept questions, and questions about this conversation are
+answered by you directly: put the complete reply in direct_answer and leave steps empty. Do NOT
+plan and do NOT use tools for them. Use steps only when the user asks you to DO something on
+this PC, asks about this PC's current state (files, apps, hardware, processes), or needs live
+data you cannot know. In that case turn the goal into the FEWEST steps
 that the available tools can perform. A step is a checkpoint that gets verified, not a single
 tool call: one step may use many tool calls, so merge related actions. Most goals need 1-3
 steps; a simple goal is ONE step. Each step needs an expected_outcome that can be checked by
@@ -47,6 +51,12 @@ When a final goal and success criteria are given, passed also means the whole go
 (earlier verified steps count as evidence), and you must fill `summary` with a short final
 answer for the user."""
 
+VOICE_STYLE = (
+    "Reply style: the user is SPEAKING to you and will HEAR your final reply read aloud. "
+    "Make it short and conversational: one to three plain sentences, no markdown, tables, "
+    "code or long file paths."
+)
+
 _PREVIEW = 600
 
 
@@ -65,6 +75,8 @@ def format_actions(actions: list[ActionRecord], limit: int = _PREVIEW) -> str:
 
 def plan_prompt(state: RunState, tool_catalog: str) -> str:
     parts = [f"User message: {state.goal}"]
+    if state.voice:
+        parts.append(VOICE_STYLE)
     parts.append(f"Available tools:\n{tool_catalog or '(none)'}")
     if state.session:
         earlier = "\n".join(
@@ -89,6 +101,8 @@ def step_prompt(state: RunState) -> str:
         lines.append(f"{marker} {i + 1}. {step.description}")
     step = state.current_step
     parts = [f"Overall goal: {state.goal}"]
+    if state.voice:
+        parts.append(VOICE_STYLE)
     parts.append("Plan:\n" + "\n".join(lines))
     if state.completed:
         parts.append(
@@ -116,6 +130,7 @@ def verify_prompt(
     earlier: list[tuple[str, str]],
     goal: str = "",
     success_criteria: str = "",
+    voice: bool = False,
 ) -> str:
     parts = [
         f"Step: {subject}",
@@ -130,4 +145,6 @@ def verify_prompt(
             f"This is the LAST step. Overall goal: {goal}\n"
             f"Success criteria for the whole goal: {success_criteria}"
         )
+        if voice:
+            parts.append(VOICE_STYLE)
     return "\n\n".join(parts)

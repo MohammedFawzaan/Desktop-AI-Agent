@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import asdict
 from typing import Any
 
@@ -11,6 +12,7 @@ from rich.table import Table
 
 from desktop_ai_agent.agent.state import RunResult
 from desktop_ai_agent.obs.metrics import estimate_cost
+from desktop_ai_agent.voice.session import VoiceCall
 
 _STATUS_STYLE = {
     "success": "green",
@@ -144,3 +146,22 @@ def render_metrics(console: Console, result: RunResult, *, verbose: bool = False
             color = "green" if v.status == "passed" else "yellow"
             table.add_row(str(v.step), f"[{color}]{label}[/{color}]", _one_line(v.reason, 120))
         console.print(table)
+
+
+def render_voice_metrics(console: Console, calls: Sequence[VoiceCall]) -> None:
+    if not calls:
+        return
+    table = Table(title="Voice calls", box=box.SIMPLE_HEAD)
+    for name in ("Step", "Model", "Size", "Input", "Output", "Time"):
+        table.add_column(name, justify="right" if name in ("Input", "Output", "Time") else "left")
+    for c in calls:
+        u = c.info.usage
+        table.add_row(
+            "speech to text" if c.kind == "stt" else "text to speech",
+            c.info.model,
+            c.detail,
+            f"{u.prompt_tokens:,}",
+            f"{u.output_tokens:,}",
+            f"{c.info.latency_s:.1f}s",
+        )
+    console.print(table)

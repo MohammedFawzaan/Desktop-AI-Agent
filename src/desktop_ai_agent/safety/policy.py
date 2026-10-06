@@ -1,7 +1,9 @@
 """Decides whether an action runs automatically, needs the user's approval, or is refused.
 
-This is a deterministic gate in front of every tool call. It is a heuristic layer, not a
-sandbox: commands that are not clearly read-only always require the user's approval.
+The agent is autonomous: reads, new files, appends and ordinary commands all run without asking.
+Only destructive actions interrupt the user (deletes, killing processes, registry/service/system
+changes, overwriting an existing file), and a short never-run list is refused outright. This is a
+heuristic gate in front of every tool call, not a sandbox.
 """
 
 from __future__ import annotations
@@ -15,7 +17,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from desktop_ai_agent.env import known_folders
 from desktop_ai_agent.safety.audit import AuditLog
 from desktop_ai_agent.tools.base import Risk, Tool
 from desktop_ai_agent.tools.pc import resolve_path
@@ -29,7 +30,7 @@ class Assessment:
     level: Level
     summary: str
     reason: str = ""
-    key: str = ""  # what "always allow" remembers
+    key: str = ""  # what "always allow" remembers (only for level "ask")
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,9 +44,9 @@ class ApprovalRequest:
 Confirm = Callable[[ApprovalRequest], Awaitable[Literal["yes", "no", "always"]]]
 
 _SECRET_PATH = re.compile(
-    r"(^|[\\/])\.env(\..*)?$|[\\/]\.ssh([\\/]|$)|id_(rsa|ed25519|ecdsa|dsa)|\.(pem|key|pfx|p12|kdbx)$"
-    r"|[\\/]\.aws[\\/]credentials|\.git-credentials|\.npmrc$|\.pypirc$|\.netrc$"
-    r"|[\\/]login data$|[\\/]cookies$",
+    r"(^|[\\/])\.env(\..*)?$|[\\/]\.ssh([\\/]|$)|id_(rsa|ed25519|ecdsa|dsa)"
+    r"|\.(pem|key|pfx|p12|kdbx)$|[\\/]\.aws[\\/]credentials|\.git-credentials|\.npmrc$"
+    r"|\.pypirc$|\.netrc$|[\\/]login data$|[\\/]cookies$",
     re.IGNORECASE,
 )
 _SECRET_IN_TEXT = re.compile(
@@ -65,55 +66,10 @@ _DANGER_COMMAND = re.compile(
     r"\bremove-item\b|\bdel\b|\berase\b|\brd\b|\brmdir\b|\brm\b|\bshutdown\b"
     r"|restart-computer|stop-computer|stop-process|\btaskkill\b|\bkill\b|\breg(\.exe)?\b|regedit"
     r"|set-itemproperty|new-itemproperty|remove-itemproperty|\bnetsh\b|\bsc(\.exe)?\b|schtasks"
-    r"|\bicacls\b|\btakeown\b|\bcacls\b|\bclear-\w+|\bformat-\w+|move-item|\bmv\b|\bren\b"
-    r"|rename-item|uninstall|\bdisable-\w+|\bunregister-\w+|\bset-service\b|\bstop-service\b",
+    r"|\bicacls\b|\btakeown\b|\bcacls\b|clear-(content|recyclebin|eventlog|disk|item)"
+    r"|uninstall|\bdisable-\w+|\bunregister-\w+|\bset-service\b|\bstop-service\b",
     re.IGNORECASE,
 )
-_SAFE_COMMANDS = frozenset(
-    [
-        "get-childitem",
-        "gci",
-        "dir",
-        "ls",
-        "get-content",
-        "gc",
-        "cat",
-        "type",
-        "get-item",
-        "gi",
-        "get-location",
-        "pwd",
-        "whoami",
-        "hostname",
-        "get-date",
-        "get-process",
-        "ps",
-        "systeminfo",
-        "ver",
-        "write-output",
-        "write-host",
-        "select-string",
-        "sls",
-        "findstr",
-        "measure-object",
-        "sort-object",
-        "select-object",
-        "where-object",
-        "test-path",
-        "resolve-path",
-        "split-path",
-        "get-filehash",
-        "get-command",
-        "where.exe",
-        "get-psdrive",
-        "get-volume",
-        "tree",
-        "get-host",
-        "get-computerinfo",
-    ]
-)
-_SAFE_GIT = frozenset({"status", "log", "diff", "branch", "show", "remote"})
-_UNSAFE_CHARS = re.compile(r"[;&><`{}]|\$\(|@\(")
 
 
 def _protected_roots() -> list[Path]:
@@ -133,25 +89,6 @@ def _is_drive_root(path: Path) -> bool:
     return path == Path(path.anchor)
 
 
-def _is_safe_readonly(command: str) -> bool:
-    if _UNSAFE_CHARS.search(command):
-        return False
-    for segment in command.split("|"):
-        tokens = segment.strip().split()
-        if not tokens:
-            return False
-        head = tokens[0].lower()
-        if head == "git":
-            if len(tokens) < 2 or tokens[1].lower() not in _SAFE_GIT:
-                return False
-        elif head in {"python", "node", "uv", "pip", "npm", "pwsh"}:
-            if tokens[1:2] not in (["--version"], ["-v"], ["-version"]):
-                return False
-        elif head not in _SAFE_COMMANDS:
-            return False
-    return True
-
-
 def assess_command(command: str) -> Assessment:
     text = command.strip()
     summary = text if len(text) <= 300 else text[:300] + "..."
@@ -160,30 +97,14 @@ def assess_command(command: str) -> Assessment:
     if _DENY_COMMAND.search(text):
         return Assessment("deny", summary, "this command is on the never-run list")
     if _DANGER_COMMAND.search(text):
-        return Assessment("danger", summary, "the command can delete, stop or change things")
-    if _is_safe_readonly(text):
-        return Assessment("allow", summary)
-    first = text.split()[0].lower() if text.split() else ""
-    return Assessment("ask", summary, "the command is not known to be read-only", f"cmd:{first}")
+        return Assessment("danger", summary, "the command can delete, stop or change the system")
+    return Assessment("allow", summary)
 
 
 class SafetyPolicy:
     """Approver for the tool registry. `confirm` asks the human; without it, asks become denials."""
 
-    def __init__(
-        self,
-        confirm: Confirm | None = None,
-        *,
-        safe_roots: Sequence[Path] | None = None,
-        audit: AuditLog | None = None,
-    ) -> None:
-        folders = known_folders()
-        self._safe_roots = [
-            p.resolve(strict=False)
-            for p in (
-                safe_roots or [folders["Desktop"], folders["Documents"], folders["Downloads"]]
-            )
-        ]
+    def __init__(self, confirm: Confirm | None = None, *, audit: AuditLog | None = None) -> None:
         self._protected = _protected_roots()
         self._confirm = confirm
         self._audit = audit
@@ -195,11 +116,10 @@ class SafetyPolicy:
         a: Any = args
         if tool == "run_command":
             base = assess_command(a.command)
-            if base.level == "allow" or a.cwd is None:
-                return base
-            cwd = resolve_path(a.cwd)
-            if _is_under(cwd, self._protected):
-                return Assessment("deny", base.summary, f"working folder {cwd} is protected")
+            if base.level != "deny" and a.cwd is not None:
+                cwd = resolve_path(a.cwd)
+                if _is_under(cwd, self._protected):
+                    return Assessment("deny", base.summary, f"working folder {cwd} is protected")
             return base
         if tool == "read_file":
             path = resolve_path(a.path)
@@ -226,14 +146,9 @@ class SafetyPolicy:
             return Assessment("deny", summary, "it looks like a credential or secret file")
         if _is_under(path, self._protected) or _is_drive_root(path):
             return Assessment("deny", summary, "it is a protected system location")
-        overwriting = a.mode == "overwrite" and path.exists()
-        if overwriting:
+        if a.mode == "overwrite" and path.exists():
             return Assessment("ask", summary, "this replaces an existing file", f"overwrite:{path}")
-        if _is_under(path, self._safe_roots):
-            return Assessment("allow", summary)
-        return Assessment(
-            "ask", summary, "it is outside Desktop/Documents/Downloads", f"write:{path.parent}"
-        )
+        return Assessment("allow", summary)
 
     # ---- Approver ---------------------------------------------------------------------------
 
@@ -274,6 +189,9 @@ class SafetyPolicy:
     def _log(self, tool: str, result: Assessment, decision: str) -> None:
         if self._audit:
             self._audit.record(
-                tool=tool, summary=result.summary, level=result.level,
-                reason=result.reason, decision=decision,
-            )  # fmt: skip
+                tool=tool,
+                summary=result.summary,
+                level=result.level,
+                reason=result.reason,
+                decision=decision,
+            )

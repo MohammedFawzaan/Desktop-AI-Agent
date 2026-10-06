@@ -217,7 +217,7 @@ async def test_messages_needing_no_tools_get_a_direct_answer_in_one_call() -> No
     llm = FakeLLM().queue(answer("Hi! I am Friday."))
     result, rec = await run(llm)
     assert result.status == "success" and result.summary == "Hi! I am Friday."
-    assert result.llm_calls == 1 and rec.phases() == ["plan", "finish"]
+    assert result.llm_calls == 1 and rec.phases() == ["finish"]  # no planning for a question
 
 
 async def test_session_history_reaches_the_planner_but_no_hardcoded_environment() -> None:
@@ -276,3 +276,12 @@ async def test_a_claim_with_no_tool_calls_still_needs_verification() -> None:
     llm.queue(act_turn(call("do_thing")), say("Changed."), verdict("passed", summary="ok"))
     result, _ = await run(llm)
     assert result.status == "success" and llm.structured_calls == 3
+
+
+async def test_voice_mode_asks_for_short_spoken_replies_only_when_speaking() -> None:
+    spoken = FakeLLM().queue(answer("ok"))
+    await Agent(spoken, make_tools()).run("hello", voice=True)
+    assert "Reply style" in spoken.seen[0]
+    typed = FakeLLM().queue(answer("ok"))
+    await Agent(typed, make_tools()).run("hello")
+    assert "Reply style" not in typed.seen[0]

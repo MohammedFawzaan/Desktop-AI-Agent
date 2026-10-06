@@ -135,6 +135,7 @@ class RunState:
     started: float = field(default_factory=time.monotonic)
     summary: str = ""
     retries: int = 0
+    voice: bool = False
     session: tuple[SessionTurn, ...] = ()
     calls: list[CallRecord] = field(default_factory=list[CallRecord])
     tool_log: list[ToolRecord] = field(default_factory=list[ToolRecord])
