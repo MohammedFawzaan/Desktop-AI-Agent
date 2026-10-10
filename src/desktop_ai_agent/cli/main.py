@@ -8,7 +8,7 @@ from typing import Annotated, cast
 import typer
 from rich.panel import Panel
 
-from desktop_ai_agent.agent.state import SessionTurn
+from desktop_ai_agent.agent.state import RunResult, SessionTurn
 from desktop_ai_agent.cli.common import build_agent, console, finish
 
 app = typer.Typer(add_completion=False, invoke_without_command=True)
@@ -33,7 +33,8 @@ def chat(
     if ctx.invoked_subcommand is not None:
         return
 
-    agent = build_agent(trace=trace).agent
+    built = build_agent(trace=trace)
+    agent = built.agent
     console.print(
         Panel(
             "Ask me to do things on this PC. I work autonomously; I only ask before destructive "
@@ -71,6 +72,8 @@ def chat(
             del history[:-_MAX_SESSION_TURNS]
     finally:
         with suppress(Exception):
+            loop.run_until_complete(built.aclose())
+        with suppress(Exception):
             loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
 
@@ -82,9 +85,16 @@ def run(
 ) -> None:
     """Run a single task and exit."""
     opts = cast(Options, ctx.obj)
-    agent = build_agent(trace=opts.trace).agent
-    result = asyncio.run(agent.run(goal))
-    finish(agent, result, opts.verbose)
+    built = build_agent(trace=opts.trace)
+
+    async def run_once() -> RunResult:
+        try:
+            return await built.agent.run(goal)
+        finally:
+            await built.aclose()
+
+    result = asyncio.run(run_once())
+    finish(built.agent, result, opts.verbose)
     raise typer.Exit(0 if result.status == "success" else 1)
 
 

@@ -285,3 +285,52 @@ async def test_voice_mode_asks_for_short_spoken_replies_only_when_speaking() -> 
     typed = FakeLLM().queue(answer("ok"))
     await Agent(typed, make_tools()).run("hello")
     assert "Reply style" not in typed.seen[0]
+
+
+async def test_llm_calls_made_inside_a_tool_count_in_the_metrics() -> None:
+    from dataclasses import replace
+
+    from desktop_ai_agent.tools import ToolResult
+    from tests.fakes import INFO
+
+    reg = make_tools()
+
+    @reg.tool(risk=Risk.READ)
+    async def look() -> ToolResult:
+        """Pretend vision tool."""
+        return replace(ToolResult.success("a red button"), calls=(INFO,))
+
+    llm = FakeLLM().queue(
+        plan("look", "change it"),
+        act_turn(call("look")),
+        say("Saw it."),
+        act_turn(call("do_thing")),
+        say("Done."),
+        verdict("passed", summary="ok"),
+    )
+    result = await Agent(llm, reg, budget=Budget(verify_probes=0)).run("x")
+    purposes = [c.purpose for c in result.calls]
+    assert "vision" in purposes and result.llm_calls == len(result.calls)
+
+
+async def test_time_sensitive_questions_are_never_answered_from_memory() -> None:
+    llm = FakeLLM().queue(
+        answer("He was detained."),  # the model tries to answer a news question from memory
+        plan("look it up"),
+        act_turn(call("check_thing")),
+        say("Per the article: detained on 9 October."),
+    )
+    rec = Recorder()
+    result = await Agent(llm, make_tools(), budget=Budget(verify_probes=0), sink=rec).run(
+        "What happened to Abhijit Dipke on 9 October 2026?"
+    )
+    assert result.status == "success" and llm.structured_calls == 2
+    assert any(e.kind == "grounding" for e in rec.events)
+    assert "depends on current" in llm.seen[1]
+
+
+async def test_stable_knowledge_still_gets_one_call() -> None:
+    llm = FakeLLM().queue(answer("Recursion is a function calling itself."))
+    rec = Recorder()
+    result = await Agent(llm, make_tools(), sink=rec).run("Explain recursion simply")
+    assert result.llm_calls == 1 and not any(e.kind == "grounding" for e in rec.events)

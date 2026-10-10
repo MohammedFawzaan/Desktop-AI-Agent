@@ -70,6 +70,7 @@ class FakeLLM:
         self.structured: dict[type[BaseModel], deque[BaseModel]] = defaultdict(deque)
         self.generate_calls = 0
         self.seen: list[str] = []
+        self.tool_names: list[list[str]] = []
         self.structured_calls = 0
 
     def queue(self, *items: LLMResponse | BaseModel) -> FakeLLM:
@@ -89,6 +90,7 @@ class FakeLLM:
         thinking: Thinking = Thinking.LOW,
     ) -> LLMResponse:
         self.generate_calls += 1
+        self.tool_names.append([t.name for t in tools])
         if not self.turns:
             raise AssertionError("FakeLLM: no scripted act turn left")
         return self.turns.popleft()

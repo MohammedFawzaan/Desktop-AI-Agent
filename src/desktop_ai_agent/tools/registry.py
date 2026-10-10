@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import time
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -56,7 +56,12 @@ class ToolRegistry:
         self._approver = approver
 
     def tool(
-        self, *, risk: Risk = Risk.READ, name: str | None = None, timeout_s: float = 30.0
+        self,
+        *,
+        risk: Risk = Risk.READ,
+        name: str | None = None,
+        timeout_s: float = 30.0,
+        group: str = "pc",
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             params = list(inspect.signature(fn).parameters)
@@ -78,6 +83,7 @@ class ToolRegistry:
                 fn=call_fn,
                 risk=risk,
                 timeout_s=timeout_s,
+                group=group,
             )
             return fn
 
@@ -91,15 +97,25 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
-    def specs(self, *, read_only: bool = False) -> list[ToolSpec]:
+    def groups(self) -> list[str]:
+        return sorted({t.group for t in self._tools.values()})
+
+    def specs(
+        self, *, read_only: bool = False, groups: Collection[str] | None = None
+    ) -> list[ToolSpec]:
         return [
             ToolSpec(t.name, t.description, t.args_model.model_json_schema())
             for t in self._tools.values()
-            if not read_only or t.risk is Risk.READ
+            if (not read_only or t.risk is Risk.READ) and (groups is None or t.group in groups)
         ]
 
     def describe(self) -> str:
-        return "\n".join(f"- {t.name} [{t.risk}]: {t.description}" for t in self._tools.values())
+        """Compact catalog for the planner: one line per tool, grouped."""
+        lines: list[str] = []
+        for group in self.groups():
+            names = ", ".join(t.name for t in self._tools.values() if t.group == group)
+            lines.append(f"- {group}: {names}")
+        return "\n".join(lines)
 
     async def execute(self, call: ToolCall, *, read_only: bool = False) -> ToolResult:
         started = time.perf_counter()

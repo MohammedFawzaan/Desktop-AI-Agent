@@ -161,3 +161,31 @@ async def test_reads_are_not_logged_but_auto_writes_are(tmp_path: Path) -> None:
     assert (await policy(tool("write_file", WriteArgs), args)).allow
     records = [json.loads(x) for x in (tmp_path / "audit.jsonl").read_text().splitlines()]
     assert len(records) == 1 and records[0]["decision"] == "auto"
+
+
+def test_gui_clicks_are_judged_by_the_element_name(tmp_path: Path) -> None:
+    from desktop_ai_agent.tools.gui import ClickArgs
+
+    names = {1: "Save", 2: "Delete account", 3: "Don't Save"}
+    policy = SafetyPolicy(None, describe_element=names.get)
+    assert policy.assess("click", ClickArgs(element=1)).level == "allow"
+    assert policy.assess("click", ClickArgs(element=2)).level == "danger"
+    assert policy.assess("click", ClickArgs(element=3)).level == "danger"
+    assert policy.assess("click", ClickArgs(x=10, y=20)).level == "allow"
+
+
+def test_closing_windows_and_close_shortcuts_ask_first(tmp_path: Path) -> None:
+    from desktop_ai_agent.tools.gui import KeysArgs, WindowActionArgs
+
+    policy = SafetyPolicy(None)
+    assert (
+        policy.assess("window_action", WindowActionArgs(window="Notepad", action="close")).level
+        == "ask"
+    )
+    assert (
+        policy.assess("window_action", WindowActionArgs(window="Notepad", action="minimize")).level
+        == "allow"
+    )
+    assert policy.assess("press_keys", KeysArgs(keys="Alt+F4")).level == "ask"
+    assert policy.assess("press_keys", KeysArgs(keys="ctrl+a, shift+delete")).level == "danger"
+    assert policy.assess("press_keys", KeysArgs(keys="ctrl+s")).level == "allow"

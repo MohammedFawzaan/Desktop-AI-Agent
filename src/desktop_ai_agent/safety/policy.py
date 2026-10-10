@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from desktop_ai_agent.gui.keys import normalize as normalize_keys
 from desktop_ai_agent.safety.audit import AuditLog
 from desktop_ai_agent.tools.base import Risk, Tool
 from desktop_ai_agent.tools.pc import resolve_path
@@ -71,6 +72,16 @@ _DANGER_COMMAND = re.compile(
     re.IGNORECASE,
 )
 
+_DANGER_CLICK = re.compile(
+    r"\b(delete|remove|uninstall|erase|format|discard|wipe|reset|permanently|factory)\b"
+    r"|don'?t save|do not save|empty recycle bin|sign out|log out"
+    r"|\b(buy|pay|purchase|checkout|place order|order now|confirm order|confirm payment)\b"
+    r"|\b(transfer|send money|subscribe|unsubscribe)\b",
+    re.IGNORECASE,
+)
+_CLOSE_KEYS = {"alt+f4", "ctrl+w", "ctrl+shift+w"}
+_DANGER_KEYS = {"shift+delete", "shift+del"}
+
 
 def _protected_roots() -> list[Path]:
     roots: list[Path] = []
@@ -104,7 +115,16 @@ def assess_command(command: str) -> Assessment:
 class SafetyPolicy:
     """Approver for the tool registry. `confirm` asks the human; without it, asks become denials."""
 
-    def __init__(self, confirm: Confirm | None = None, *, audit: AuditLog | None = None) -> None:
+    def __init__(
+        self,
+        confirm: Confirm | None = None,
+        *,
+        audit: AuditLog | None = None,
+        describe_element: Callable[[int], str | None] | None = None,
+        describe_web_element: Callable[[int], str | None] | None = None,
+    ) -> None:
+        self._describe = describe_element
+        self._describe_web = describe_web_element
         self._protected = _protected_roots()
         self._confirm = confirm
         self._audit = audit
@@ -137,7 +157,41 @@ class SafetyPolicy:
             if _SECRET_PATH.search(str(path)):
                 return Assessment("deny", f"delete {path}", "it looks like a credential file")
             return Assessment("danger", f"move to Recycle Bin: {path}", "deleting user data")
+        if tool in ("click", "window_action", "press_keys"):
+            return self._assess_gui(tool, a)
+        if tool == "browser_click":
+            name = self._describe_web(a.element) if self._describe_web else None
+            if name and _DANGER_CLICK.search(name):
+                return Assessment(
+                    "danger", f"click '{name}' on a web page", "it can buy, pay, send or delete"
+                )
+            return Assessment("allow", f"click {name or a.element} on a web page")
         return Assessment("allow", tool)
+
+    def _assess_gui(self, tool: str, a: Any) -> Assessment:
+        if tool == "click":
+            name = self._describe(a.element) if a.element is not None and self._describe else None
+            target = f"'{name}'" if name else (f"[{a.element}]" if a.element else f"({a.x}, {a.y})")
+            if name and _DANGER_CLICK.search(name):
+                return Assessment("danger", f"click {target}", "it can delete or discard data")
+            return Assessment("allow", f"click {target}")
+        if tool == "window_action":
+            if a.action == "close":
+                return Assessment(
+                    "ask", f"close window '{a.window}'", "unsaved work in it could be lost",
+                    f"close:{a.window.lower()}",
+                )  # fmt: skip
+            return Assessment("allow", f"{a.action} '{a.window}'")
+        combos = normalize_keys(a.keys)
+        if any(c in _DANGER_KEYS for c in combos):
+            return Assessment("danger", f"press {a.keys}", "it deletes without the Recycle Bin")
+        closing = [c for c in combos if c in _CLOSE_KEYS]
+        if closing:
+            return Assessment(
+                "ask", f"press {a.keys}", "it closes a window or tab; unsaved work could be lost",
+                f"keys:{closing[0]}",
+            )  # fmt: skip
+        return Assessment("allow", f"press {a.keys}")
 
     def _assess_write(self, a: Any) -> Assessment:
         path = resolve_path(a.path)

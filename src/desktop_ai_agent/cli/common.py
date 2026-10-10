@@ -12,11 +12,15 @@ from rich.panel import Panel
 
 from desktop_ai_agent.agent import Agent, Budget
 from desktop_ai_agent.agent.state import RunResult
+from desktop_ai_agent.browser import BrowserController
 from desktop_ai_agent.cli.render import metrics_dict, render_metrics, render_result
 from desktop_ai_agent.config import Settings
+from desktop_ai_agent.gui import GuiController
 from desktop_ai_agent.llm import GeminiLLM
 from desktop_ai_agent.obs import CompositeSink, Event, EventSink, JsonlSink
 from desktop_ai_agent.safety import ApprovalRequest, AuditLog, SafetyPolicy
+from desktop_ai_agent.tools.browser import register_browser_tools
+from desktop_ai_agent.tools.gui import register_gui_tools
 from desktop_ai_agent.tools.pc import build_pc_registry
 
 console = Console()
@@ -47,6 +51,8 @@ class ConsoleSink:
                 console.print(f"[{style}]>> {d['phase'].upper()}[/{style}]")
             case "thinking":
                 console.print("[dim]thinking...[/dim]")
+            case "grounding":
+                console.print("[dim]this needs current information; looking it up...[/dim]")
             case "plan":
                 for i, step in enumerate(d["steps"], 1):
                     console.print(f"   {i}. {step['description']}")
@@ -88,6 +94,14 @@ class Built:
     agent: Agent
     llm: GeminiLLM
     settings: Settings
+    gui: GuiController | None = None
+    browser: BrowserController | None = None
+
+    async def aclose(self) -> None:
+        if self.browser is not None:
+            await self.browser.close()
+        if self.gui is not None:
+            self.gui.close()
 
 
 def build_agent(*, trace: bool) -> Built:
@@ -103,9 +117,29 @@ def build_agent(*, trace: bool) -> Built:
     sinks: list[EventSink] = [ConsoleSink()]
     if trace:
         sinks.append(JsonlSink(Path("runs") / f"{datetime.now():%Y%m%d-%H%M%S}.jsonl"))
-    policy = SafetyPolicy(confirm, audit=AuditLog(Path("runs") / "audit.jsonl"))
-    agent = Agent(llm, build_pc_registry(policy), budget=Budget(), sink=CompositeSink(sinks))
-    return Built(agent, llm, settings)
+    gui = GuiController() if settings.gui_enabled else None
+    browser = (
+        BrowserController(
+            settings.friday_data_dir / "browser",
+            channels=settings.browser_channels,
+            headless=settings.browser_headless,
+        )
+        if settings.browser_enabled
+        else None
+    )
+    policy = SafetyPolicy(
+        confirm,
+        audit=AuditLog(Path("runs") / "audit.jsonl"),
+        describe_element=gui.describe_element if gui else None,
+        describe_web_element=browser.describe_element if browser else None,
+    )
+    registry = build_pc_registry(policy)
+    if gui is not None:
+        register_gui_tools(registry, gui, llm)
+    if browser is not None:
+        register_browser_tools(registry, browser)
+    agent = Agent(llm, registry, budget=Budget(), sink=CompositeSink(sinks))
+    return Built(agent, llm, settings, gui, browser)
 
 
 def finish(agent: Agent, result: RunResult, verbose: bool) -> None:

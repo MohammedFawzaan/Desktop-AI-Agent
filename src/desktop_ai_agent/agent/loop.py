@@ -10,6 +10,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from desktop_ai_agent.agent import prompts
+from desktop_ai_agent.agent.grounding import LOOKUP_NOTE, needs_fresh_data
 from desktop_ai_agent.agent.state import (
     Budget,
     Phase,
@@ -35,7 +36,7 @@ from desktop_ai_agent.llm.base import (
 )
 from desktop_ai_agent.obs.events import Event, EventSink, NullSink
 from desktop_ai_agent.obs.metrics import CallRecord, ToolRecord, VerdictRecord
-from desktop_ai_agent.tools.base import Risk
+from desktop_ai_agent.tools.base import Risk, ToolResult
 from desktop_ai_agent.tools.registry import ToolRegistry
 
 SUBMIT_VERDICT = "submit_verdict"
@@ -44,6 +45,20 @@ _VERDICT_TOOL = ToolSpec(
     "Submit your final verdict. Call this once you have enough evidence.",
     Verdict.model_json_schema(),
 )
+
+
+def trim_old_observations(contents: list[types.Content], keep: int = 2, limit: int = 600) -> None:
+    """Shorten all but the latest tool results in a step, so each turn resends less."""
+    tool_turns = [c for c in contents if c.parts and any(p.function_response for p in c.parts)]
+    for content in tool_turns[:-keep]:
+        for part in content.parts or []:
+            response = part.function_response.response if part.function_response else None
+            if not response:
+                continue
+            for key in ("output", "error"):
+                value = response.get(key)
+                if isinstance(value, str) and len(value) > limit:
+                    response[key] = value[:limit] + f"... [trimmed, was {len(value)} chars]"
 
 
 class BudgetExceeded(Exception):
@@ -108,6 +123,17 @@ class Agent:
                         self._emit(state, "thinking")
                     await self._plan(state)
                     plan = state.require_plan()
+                    if (
+                        not plan.steps
+                        and not state.grounding_retry
+                        and needs_fresh_data(state.goal)
+                    ):
+                        # A time-sensitive question answered from memory: make it look it up.
+                        state.grounding_retry = True
+                        state.failures.append(LOOKUP_NOTE)
+                        self._emit(state, "grounding")
+                        await self._plan(state)
+                        plan = state.require_plan()
                     if not plan.steps:
                         state.summary = plan.direct_answer.strip()
                         phase = Phase.FINISH
@@ -192,7 +218,7 @@ class Agent:
             state,
             system=prompts.ACT_SYSTEM,
             contents=ctx.contents,
-            tools=self._tools.specs(),
+            tools=self._tools.specs(groups=self._step_groups(state)),
             thinking=Thinking.MEDIUM if state.step_attempts else Thinking.LOW,
             purpose="act",
         )
@@ -203,11 +229,20 @@ class Agent:
         ctx.pending = resp.tool_calls
         return Phase.OBSERVE
 
+    def _step_groups(self, state: RunState) -> set[str] | None:
+        """Only the tool groups the planner said this step needs; all of them on a retry."""
+        if state.plan is None or not state.has_more_steps or state.step_attempts:
+            return None
+        known = set(self._tools.groups())
+        wanted = {g.strip().lower() for g in state.current_step.tools} & known
+        return (wanted | {"pc"}) if wanted else None
+
     async def _observe(self, state: RunState, ctx: StepContext) -> Phase:
         calls = ctx.pending
         results = await self._tools.execute_all(calls)
         for call, result in zip(calls, results, strict=True):
             ctx.record(call, result.ok, result.text, self._budget.stuck_threshold)
+            self._record_tool_llm_calls(state, result)
             state.tool_log.append(
                 ToolRecord(
                     state.step_index + 1,
@@ -227,6 +262,7 @@ class Agent:
                 output=prompts.clip(result.text, 400),
             )
         ctx.contents.append(tool_results_content(calls, [r.payload() for r in results]))
+        trim_old_observations(ctx.contents)
         ctx.pending = ()
         return Phase.VERIFY if ctx.stuck else Phase.ACT
 
@@ -297,7 +333,7 @@ class Agent:
             success_criteria=plan.success_criteria if is_last else "",
             voice=state.voice,
         )
-        specs = self._tools.specs(read_only=True)
+        specs = self._tools.specs(read_only=True, groups=self._step_groups(state))
         if not specs or self._budget.verify_probes <= 0:
             return await self._structured(
                 state,
@@ -346,6 +382,7 @@ class Agent:
                 *(self._tools.execute(c, read_only=True) for c in resp.tool_calls)
             )
             for call, result in zip(resp.tool_calls, results, strict=True):
+                self._record_tool_llm_calls(state, result)
                 state.tool_log.append(
                     ToolRecord(
                         state.step_index + 1,
@@ -436,6 +473,11 @@ class Agent:
         )
         self._record_call(state, purpose, info)
         return parsed
+
+    def _record_tool_llm_calls(self, state: RunState, result: ToolResult) -> None:
+        for info in result.calls:
+            state.llm_calls += 1
+            self._record_call(state, "vision", info)
 
     def _record_call(self, state: RunState, purpose: str, info: CallInfo) -> None:
         u = info.usage

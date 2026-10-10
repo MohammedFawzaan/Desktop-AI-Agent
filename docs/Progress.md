@@ -1,10 +1,10 @@
 # Progress
 
-What is built and working so far in Friday, the autonomous Windows AI agent. Last updated 2026-10-08.
+What is built and working so far in Friday, the autonomous Windows AI agent. Last updated 2026-10-11.
 
 ## Status
 
-Phases 1-3 are complete. Friday works from a typed chat or by voice ("Hey Friday" / hotkey), acts on the real PC (files and PowerShell), checks its own work, and shows detailed metrics after every task. 104 automated tests pass; ruff and strict pyright are clean.
+Phases 1-4 are complete. Friday works from a typed chat or by voice ("Hey Friday" / hotkey), acts on the real PC through files, PowerShell, desktop app interfaces and her own browser, checks her own work, and shows detailed metrics after every task. 164 automated tests pass (including a real headless browser session and request racing); ruff and strict pyright are clean.
 
 ## What was built
 
@@ -32,13 +32,30 @@ Phases 1-3 are complete. Friday works from a typed chat or by voice ("Hey Friday
 - **Microphone handling:** uses the Windows default mic through WASAPI (the older default path returned silence); `friday mics` tests it; `MIC_DEVICE` overrides it; a warning appears if the mic is silent.
 - **Voice metrics:** a table of the speech-to-text and text-to-speech calls after each turn.
 
+### Phase 4 - GUI and browser control
+- **Desktop apps (Windows UI Automation):** `list_windows`, `read_window` (a window's buttons, fields, menus and text as a numbered list), `click`, `type_text`, `press_keys`, `scroll`, `focus_window`, `window_action` (minimize, maximize, restore, close), `open_app` (any Start-menu app by name, typos tolerated, waits for its window).
+- **Fast, exact reading:** one batched UI Automation call reads a whole window (about 0.02-0.08 s). Chromium and Electron apps, which hide their controls until asked, are woken up automatically.
+- **Every action reports what changed:** the focused window and any new windows (dialogs, popups), so the verifier can confirm the effect.
+- **Vision fallback:** `inspect_screen` sends a screenshot to Gemini when an app does not expose its controls; it answers the question and returns click positions.
+- **Browser control (Playwright):** Friday has her own browser window using the installed Chrome (Edge as fallback) with a separate profile, so the user's normal browser is untouched and sign-ins in Friday's browser are remembered. Tools: `browser_open`, `browser_read`, `browser_click`, `browser_type`, `browser_press`, `browser_select`, `browser_scroll`, `browser_back`, `browser_tabs`. Pages come back as numbered links, buttons and inputs plus their visible text; password values are masked. `open_url` still opens a page in the user's own browser.
+- **Safety for GUI and web:** clicks on things like Delete, Don't save, Uninstall, Buy, Pay, Checkout or Place order always ask; closing a window or pressing Alt+F4 / Ctrl+W asks (can answer "always"); Shift+Delete always asks.
+- **Metrics:** vision calls made inside tools are counted in the token and cost report.
+- **Speed work after adding 20 tools:** each plan step names the tool groups it needs ('pc', 'apps', 'web') and only those are sent to the model (all of them on a retry); older tool outputs inside a step are trimmed; a call that runs unusually long (7 s at low thinking) is raced by a duplicate request and the first answer wins, because Gemini occasionally took 15-16 s on calls that normally take 2 s; fixed waits after GUI and browser actions were shortened and page snapshots made smaller.
+
+### Grounding: no stale or invented answers
+- **Planner rules:** only stable knowledge (concepts, maths, code, advice, small talk) is answered from memory. News, today/latest/recent, prices, exchange rates, weather, scores, versions, what a real person or company did recently, and this PC's state are always looked up. Conversation notes are treated as summaries, not sources.
+- **Code guard:** if a message looks time-sensitive (keywords such as news, latest, today, price, rate, weather, or a recent year) and the planner still answers from memory, Friday re-plans once with an instruction to look it up.
+- **Research rules for the actor:** search with DuckDuckGo (Google blocks automated browsers), open a reliable source, answer only from what the tools showed, say "not found" instead of guessing, mention source and recency.
+- **Verifier fact check:** every name, number, date and claim in an information answer must be supported by tool output, otherwise the step is retried; the final summary may contain only supported facts.
+- Live check: "convert 0.0225 dollars into rupees" now fetches the current rate (7 calls, 20 s) instead of answering from memory; "explain recursion" still answers in 1 call (2.2 s).
+
 ## How the agent works
 
 1. **Triage + plan (one call, low thinking):** answers directly if the message needs no PC access; otherwise produces the fewest steps, each with an observable expected outcome.
 2. **Act / Observe:** one step at a time in a fresh small context; tools run in order, a failure skips the rest of that turn, pure reads run concurrently.
 3. **Verify:** an independent verifier judges from tool outputs, can re-check fresh state with read-only tools, and submits its verdict in the same call. The last step's verdict also judges the whole goal; read-only steps skip verification.
 4. **Recover:** retry the step (max 2), then replan (max 2), then give up; `blocked` stops. Repeating the same call with the same output forces a replan.
-5. **Budgets:** 40 LLM calls, 10 turns per step, 15 minutes.
+5. **Budgets:** 40 LLM calls, 15 turns per step, 15 minutes.
 
 ## Measured results
 
@@ -49,6 +66,9 @@ Phases 1-3 are complete. Friday works from a typed chat or by voice ("Hey Friday
 | Plain question | 2.2-3.8 s | about 2.1-2.5 s, 1 call |
 | System-specs question | 4 calls | 3 calls, 4.9 s |
 | Time to first speech | 4.9 s | 1.3 s |
+
+Live phase 4 runs: "open Calculator and work out 25 times 4" took 23 s and 10 LLM calls (about $0.02); "find who designed Python on Wikipedia" took 21 s and 9 calls (about $0.03), both verified.
+After the speed work the same two tasks took 7 calls each instead of 10 and 9, and the web task's prompts shrank from 4.5k to 3.2k tokens on average (8.5k to 5.1k at most). Wall time stayed around 23-25 s because Gemini's per-call latency varied between runs (2.0-2.9 s); most of a GUI task's time is now that latency multiplied by the number of steps.
 
 ## Tech stack (in use)
 
@@ -64,21 +84,29 @@ Phases 1-3 are complete. Friday works from a typed chat or by voice ("Hey Friday
 | Wake word | vosk with `vosk-model-small-en-us-0.15` |
 | Hotkey | Windows RegisterHotKey via ctypes |
 | Speech | Gemini audio models (STT and TTS) |
+| Desktop app control | Windows UI Automation via comtypes, SendInput via ctypes |
+| Screenshots, vision | mss, Pillow, Gemini vision |
+| Browser control | Playwright driving the installed Chrome or Edge |
 | Quality | pytest, pytest-asyncio, ruff, pyright (strict) |
 
 ## Layout (`src/desktop_ai_agent/`)
 
-`llm/` Gemini client · `agent/` loop, state, prompts · `tools/` registry and PC tools · `safety/` policy and audit log · `obs/` events, traces, metrics · `voice/` audio, mic, wake word, hotkey, player, session · `cli/` chat, voice mode, reports · `env.py` system discovery · `config.py` settings. Tests in `tests/`.
+`llm/` Gemini client · `agent/` loop, state, prompts · `tools/` registry and PC tools · `safety/` policy and audit log · `obs/` events, traces, metrics · `voice/` audio, mic, wake word, hotkey, player, session · `gui/` UI Automation, input, apps, screenshots, vision · `browser/` Playwright controller and page snapshots · `cli/` chat, voice mode, reports · `env.py` system discovery · `config.py` settings. Tests in `tests/`.
 
 ## How to use
 
 - Chat: `uv run friday` (`-v` for full metrics). One task: `uv run friday run "<task>"`.
+- GUI and web: just ask, e.g. "open Calculator and work out 25 times 4" or "search Wikipedia for X".
 - Voice: `uv run friday voice` (`--no-wake`, `--hotkey ctrl+alt+g`); test the mic with `uv run friday mics`.
 - Traces: `runs/<timestamp>.jsonl`; safety audit: `runs/audit.jsonl`.
 - Checks: `uv run pytest`, `uv run ruff check .`, `uv run pyright`.
 
 ## Known limits
 
+- While Friday drives an app, your own typing or clicks can land in that app (one keyboard and mouse are shared). Let her finish GUI tasks hands-off.
+- `read_window` sees only what apps expose to UI Automation; canvas-drawn apps and games need `inspect_screen`, which costs a vision call.
+- Friday's browser uses its own profile: sign in to sites there once. Only one Friday session can use that browser at a time.
+- Browser snapshots cover the main page, not content inside iframes.
 - The wake word was tuned on synthetic speech; other voices or noisy rooms may need threshold tuning.
 - The mic is paused while Friday speaks; the hotkey is the way to interrupt her.
 - Destructive-action approvals are typed (y/n), not spoken.

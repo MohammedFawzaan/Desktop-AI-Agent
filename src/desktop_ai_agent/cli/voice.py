@@ -132,3 +132,4 @@ async def run_voice(
     finally:
         mic.close()
         listener.stop()
+        await built.aclose()

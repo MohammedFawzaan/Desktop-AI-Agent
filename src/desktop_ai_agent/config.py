@@ -21,4 +21,8 @@ class Settings(BaseSettings):
     stt_models: list[str] = ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
     tts_models: list[str] = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"]
     tts_voice: str = "Kore"
+    gui_enabled: bool = True
+    browser_enabled: bool = True
+    browser_channels: list[str] = ["chrome", "msedge"]  # installed browsers to drive
+    browser_headless: bool = False
     mic_device: str | None = None  # index or part of a name; default = Windows default mic

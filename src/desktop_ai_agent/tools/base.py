@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from desktop_ai_agent.llm.base import CallInfo
+
 MAX_OUTPUT_CHARS = 8000
 
 
@@ -37,6 +39,7 @@ class ToolResult:
     output: str = ""
     error: str = ""
     duration_s: float = 0.0
+    calls: tuple[CallInfo, ...] = ()  # LLM calls made inside the tool
 
     @classmethod
     def success(cls, value: Any) -> ToolResult:
@@ -64,6 +67,7 @@ class Tool:
     fn: Callable[[Any], Any]
     risk: Risk
     timeout_s: float
+    group: str = "pc"
 
     async def run(self, args: BaseModel) -> Any:
         if inspect.iscoroutinefunction(self.fn):

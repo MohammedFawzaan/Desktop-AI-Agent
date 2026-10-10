@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -200,6 +201,7 @@ class GeminiLLM:
         tts_models: Sequence[str] = (),
         tts_voice: str = "Kore",
         attempts_per_model: int = 2,
+        hedge_after_s: float | None = 7.0,
         request_timeout_s: float = 30.0,
         cooldown_s: float = 60.0,
     ) -> None:
@@ -211,8 +213,10 @@ class GeminiLLM:
         self._tts_chain = list(tts_models)
         self._tts_voice = tts_voice
         self._attempts = attempts_per_model
+        self._hedge_after_s = hedge_after_s
         self._cooldown_s = cooldown_s
         self._cooling_until: dict[str, float] = {}
+        self.hedged = 0  # how many slow calls were raced with a duplicate
 
     def _config(self, system: str, thinking: Thinking) -> types.GenerateContentConfig:
         return types.GenerateContentConfig(
@@ -226,6 +230,51 @@ class GeminiLLM:
         cooling = [m for m in chain if m not in healthy]
         return healthy + cooling
 
+    def _hedge_delay(self, config: types.GenerateContentConfig) -> float | None:
+        """How long to wait before sending a duplicate request; long thinking is not hedged."""
+        if self._hedge_after_s is None:
+            return None
+        level = config.thinking_config.thinking_level if config.thinking_config else None
+        if level == types.ThinkingLevel.HIGH:
+            return None
+        return self._hedge_after_s * (1.7 if level == types.ThinkingLevel.MEDIUM else 1.0)
+
+    async def _hedged(
+        self, model: str, contents: Sequence[types.Content], config: types.GenerateContentConfig
+    ) -> types.GenerateContentResponse:
+        """Gemini occasionally takes 15+ s on a call that normally takes 2 s. If a request is
+        unusually slow, send the same request again and use whichever answers first."""
+
+        def request() -> asyncio.Task[types.GenerateContentResponse]:
+            return asyncio.ensure_future(
+                self._client.aio.models.generate_content(  # pyright: ignore[reportUnknownMemberType]
+                    model=model, contents=list(contents), config=config
+                )
+            )
+
+        first = request()
+        delay = self._hedge_delay(config)
+        if delay is None:
+            return await first
+        done, _ = await asyncio.wait({first}, timeout=delay)
+        if done:
+            return first.result()
+        self.hedged += 1
+        pending: set[asyncio.Task[types.GenerateContentResponse]] = {first, request()}
+        error: BaseException | None = None
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    if task.exception() is None:
+                        return task.result()
+                    error = task.exception()
+        finally:
+            for task in pending:
+                task.cancel()
+        assert error is not None
+        raise error
+
     async def _attempt(
         self, model: str, contents: Sequence[types.Content], config: types.GenerateContentConfig
     ) -> LLMResponse:
@@ -236,9 +285,7 @@ class GeminiLLM:
             reraise=True,
         ):
             with attempt:
-                resp = await self._client.aio.models.generate_content(  # pyright: ignore[reportUnknownMemberType]
-                    model=model, contents=list(contents), config=config
-                )
+                resp = await self._hedged(model, contents, config)
                 return _parse(resp, model)
         raise LLMError("unreachable")
 

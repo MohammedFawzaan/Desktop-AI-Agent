@@ -26,6 +26,10 @@ class Step(BaseModel):
     expected_outcome: str = Field(
         description="Observable state that proves this step succeeded, checkable with tools."
     )
+    tools: list[str] = Field(
+        default_factory=list[str],
+        description="Tool groups this step needs (from the catalog), e.g. ['pc'] or ['pc', 'web'].",
+    )
 
 
 class Plan(BaseModel):
@@ -67,7 +71,7 @@ class Verdict(BaseModel):
 @dataclass(slots=True)
 class Budget:
     max_llm_calls: int = 40
-    max_turns_per_step: int = 10
+    max_turns_per_step: int = 15
     max_step_retries: int = 2
     max_replans: int = 2
     verify_probes: int = 2
@@ -136,6 +140,7 @@ class RunState:
     summary: str = ""
     retries: int = 0
     voice: bool = False
+    grounding_retry: bool = False
     session: tuple[SessionTurn, ...] = ()
     calls: list[CallRecord] = field(default_factory=list[CallRecord])
     tool_log: list[ToolRecord] = field(default_factory=list[ToolRecord])
