@@ -7,10 +7,12 @@ from typing import Literal
 
 import numpy as np
 
-from desktop_ai_agent.agent.state import RunResult, SessionTurn
-from desktop_ai_agent.llm.base import CallInfo, LLMError, Usage
-from desktop_ai_agent.voice import VoiceCall, VoiceSession
-from desktop_ai_agent.voice.audio import FRAME_SAMPLES, SAMPLE_RATE, Pcm, pcm_to_wav, tone
+from friday.agent.llm import CallInfo, LLMError, Usage
+from friday.agent.loop import RunResult, SessionTurn
+from friday.voice import VoiceCall, VoiceSession
+from friday.voice.microphone import FRAME_SAMPLES, SAMPLE_RATE, Pcm
+from friday.voice.speech_to_text import pcm_to_wav
+from friday.voice.text_to_speech import tone
 
 INFO = CallInfo(Usage(10, 5, 0), "fake-audio-model", 0.5)
 
@@ -54,7 +56,7 @@ class FakeWake:
         self.resets += 1
 
 
-class FakePlayer:
+class FakeSpeaker:
     def __init__(self, interrupt_playback: bool = False) -> None:
         self.beeps: list[str] = []
         self.played = 0
@@ -133,11 +135,11 @@ def build(
     transcript: str | Exception = "hey friday open notepad",
     wake: FakeWake | None = None,
     hotkey: asyncio.Event | None = None,
-    player: FakePlayer | None = None,
+    speaker: FakeSpeaker | None = None,
     agent_error: Exception | None = None,
     stream: FakeSpeechStream | Exception | None = None,
-) -> tuple[VoiceSession, RecorderUI, FakePlayer, list[tuple[str, Sequence[SessionTurn]]]]:
-    ui, player = RecorderUI(), player or FakePlayer()
+) -> tuple[VoiceSession, RecorderUI, FakeSpeaker, list[tuple[str, Sequence[SessionTurn]]]]:
+    ui, speaker = RecorderUI(), speaker or FakeSpeaker()
     agent_calls: list[tuple[str, Sequence[SessionTurn]]] = []
 
     async def transcribe(wav: bytes) -> tuple[str, CallInfo]:
@@ -164,23 +166,23 @@ def build(
         mic=FakeMic(frames),
         wake=wake,
         hotkey=hotkey or asyncio.Event(),
-        player=player,
+        speaker=speaker,
         transcribe=transcribe,
         synthesize=synthesize,
         synthesize_stream=synthesize_stream if stream is not None else None,
         run_agent=run_agent,
         ui=ui,
     )
-    return session, ui, player, agent_calls
+    return session, ui, speaker, agent_calls
 
 
 async def test_wake_word_to_spoken_answer_end_to_end() -> None:
-    session, ui, player, calls = build([QUIET] * 3 + SPEECH, wake=FakeWake(fire_on_frame=3))
+    session, ui, speaker, calls = build([QUIET] * 3 + SPEECH, wake=FakeWake(fire_on_frame=3))
     result = await session.run_once()
     assert result is not None and result.summary == "Done."
     assert calls == [("open notepad", ())]  # the wake phrase was stripped
-    assert ui.heard_text == ["open notepad"] and player.beeps == ["listen"]
-    assert player.played == 1  # the reply was spoken
+    assert ui.heard_text == ["open notepad"] and speaker.beeps == ["listen"]
+    assert speaker.played == 1  # the reply was spoken
     assert [c.kind for c in ui.voice_calls[0]] == ["stt", "tts"]
     assert ui.voice_calls[0][0].detail.endswith("of audio")
 
@@ -212,10 +214,10 @@ async def test_an_empty_transcript_does_not_run_the_agent() -> None:
 async def test_speech_recognition_failure_is_reported_and_survivable() -> None:
     hotkey = asyncio.Event()
     hotkey.set()
-    session, ui, player, calls = build(SPEECH, hotkey=hotkey, transcript=LLMError("down"))
+    session, ui, speaker, calls = build(SPEECH, hotkey=hotkey, transcript=LLMError("down"))
     assert await session.run_once() is None
     assert calls == [] and "Speech recognition failed" in ui.errors[0]
-    assert player.beeps == ["listen", "error"]
+    assert speaker.beeps == ["listen", "error"]
 
 
 async def test_an_agent_crash_does_not_kill_the_voice_loop() -> None:
@@ -229,7 +231,7 @@ async def test_an_agent_crash_does_not_kill_the_voice_loop() -> None:
 async def test_the_hotkey_interrupts_speech_and_immediately_starts_listening_again() -> None:
     hotkey = asyncio.Event()
     hotkey.set()
-    session, _, _, _ = build(SPEECH, hotkey=hotkey, player=FakePlayer(interrupt_playback=True))
+    session, _, _, _ = build(SPEECH, hotkey=hotkey, speaker=FakeSpeaker(interrupt_playback=True))
     await session.run_once()
     assert hotkey.is_set()  # the press that cut the reply short is still pending
     assert await session._wait_for_trigger() == "hotkey"  # pyright: ignore[reportPrivateUsage]
@@ -249,10 +251,10 @@ async def test_replies_are_played_as_a_stream_when_streaming_is_available() -> N
     hotkey = asyncio.Event()
     hotkey.set()
     stream = FakeSpeechStream([b"\x01\x00" * 100, b"\x02\x00" * 100])
-    session, ui, player, _ = build(SPEECH, hotkey=hotkey, stream=stream)
+    session, ui, speaker, _ = build(SPEECH, hotkey=hotkey, stream=stream)
     await session.run_once()
-    assert getattr(player, "streamed", 0) == 1 and player.played == 0
-    assert player.streamed_bytes == 400  # type: ignore[attr-defined]
+    assert getattr(speaker, "streamed", 0) == 1 and speaker.played == 0
+    assert speaker.streamed_bytes == 400  # type: ignore[attr-defined]
     tts = ui.voice_calls[0][1]
     assert tts.kind == "tts" and "first audio in 0.4s" in tts.detail
 
@@ -260,9 +262,9 @@ async def test_replies_are_played_as_a_stream_when_streaming_is_available() -> N
 async def test_a_stream_that_fails_before_any_audio_falls_back_to_the_whole_file() -> None:
     hotkey = asyncio.Event()
     hotkey.set()
-    session, ui, player, _ = build(SPEECH, hotkey=hotkey, stream=LLMError("stream down"))
+    session, ui, speaker, _ = build(SPEECH, hotkey=hotkey, stream=LLMError("stream down"))
     result = await session.run_once()
-    assert result is not None and player.played == 1  # spoken via the slower path
+    assert result is not None and speaker.played == 1  # spoken via the slower path
     assert any("Streaming speech failed" in e for e in ui.errors)
     assert ui.voice_calls[0][1].detail == "5 chars"
 
@@ -272,7 +274,7 @@ async def test_the_hotkey_cuts_a_streamed_reply_short() -> None:
     hotkey.set()
     stream = FakeSpeechStream([b"\x01\x00" * 100] * 5)
     session, _, _, _ = build(
-        SPEECH, hotkey=hotkey, stream=stream, player=FakePlayer(interrupt_playback=True)
+        SPEECH, hotkey=hotkey, stream=stream, speaker=FakeSpeaker(interrupt_playback=True)
     )
     await session.run_once()
     assert hotkey.is_set()  # the press is still pending so listening restarts immediately

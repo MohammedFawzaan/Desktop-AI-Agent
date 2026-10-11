@@ -1,7 +1,7 @@
 [project]
-name = "desktop-ai-agent"
+name = "friday"
 version = "0.1.0"
-description = "Add your description here"
+description = "Friday: an autonomous AI agent for your Windows PC"
 readme = "README.md"
 authors = [
     { name = "MohammedFawzaan", email = "fawzaanmd31@gmail.com" }
@@ -27,8 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-friday = "desktop_ai_agent.cli.main:app"
-desktop-ai-agent = "desktop_ai_agent.cli.main:app"
+friday = "friday.__main__:app"
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]

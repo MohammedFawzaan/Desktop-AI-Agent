@@ -41,7 +41,7 @@ copy .env.example .env      # then put your key in .env: GOOGLE_GEMINI_API_KEY=.
 
 | Command | What it does |
 |---|---|
-| `uv run friday` | Chat in the terminal. Ctrl+C cancels a task; Ctrl+C at the prompt (or `exit`) quits |
+| `uv run friday` (or `uv run python -m friday`) | Chat in the terminal. Ctrl+C cancels a task; Ctrl+C at the prompt (or `exit`) quits |
 | `uv run friday run "<task>"` | Run one task and exit |
 | `uv run friday voice` | Voice mode: say "Hey Friday" or press **Ctrl+Alt+F**, then speak |
 | `uv run friday voice --no-wake` | Voice mode with the hotkey only (no always-on listening) |
@@ -94,14 +94,20 @@ Each step runs in a small fresh context. Retries and re-plans are capped, and ev
 ## Project layout
 
 ```
-src/desktop_ai_agent/
-  agent/   loop, state, prompts          llm/     Gemini client
-  tools/   registry + PC tools           safety/  policy + audit log
-  voice/   mic, wake word, hotkey, TTS   obs/     events, traces, metrics
-  gui/     UI Automation, input, vision  browser/ Playwright browser
-  cli/     chat, voice mode, reports     env.py   system discovery
-tests/     164 tests (fake LLM, real PowerShell, files, hotkey, headless browser)
-docs/      Product.md (vision and phases), Progress.md (what is built)
+src/friday/
+  __main__.py  the `friday` command: text chat (cli/) or voice mode (voice/)
+  app.py       wiring: model, tools, safety, agent
+  config.py    settings from .env
+  agent/       loop (Plan/Act/Observe/Verify/Recover + run state), llm (interface + Gemini), prompts
+  tools/       registry, files, shell, system, desktop, browser
+  desktop/     automation, windows, input, elements, apps, screen, vision
+  browser/     session, actions, snapshot
+  voice/       chat, session, microphone, speech_to_text, text_to_speech, wake_word, hotkey
+  safety/      policy, approvals, audit
+  monitoring/  events, metrics, tracing
+  cli/         chat, display (text chat mode only)
+tests/         flat test files (fake LLM, real PowerShell, files, hotkey, headless browser)
+docs/          Product.md (vision and phases), Progress.md (what is built)
 ```
 
 ## Development

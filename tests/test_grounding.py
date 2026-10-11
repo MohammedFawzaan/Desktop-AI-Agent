@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from desktop_ai_agent.agent import prompts
-from desktop_ai_agent.agent.grounding import needs_fresh_data
+from friday.agent import prompts
+from friday.agent.loop import needs_fresh_data
 
 
 @pytest.mark.parametrize(

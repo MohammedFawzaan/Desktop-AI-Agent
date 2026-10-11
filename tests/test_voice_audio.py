@@ -2,19 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from desktop_ai_agent.voice.audio import (
-    FRAME_SAMPLES,
-    SAMPLE_RATE,
+from friday.voice.microphone import FRAME_SAMPLES, SAMPLE_RATE, Pcm, rms
+from friday.voice.speech_to_text import (
     NoiseTracker,
-    Pcm,
     SegmenterConfig,
     UtteranceSegmenter,
     pcm_to_wav,
-    resample,
-    rms,
-    tone,
-    wav_to_pcm,
 )
+from friday.voice.text_to_speech import resample, tone, wav_to_pcm
 
 
 def frame(amplitude: float) -> Pcm:

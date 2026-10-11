@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from desktop_ai_agent.browser import BrowserController, BrowserError
-from desktop_ai_agent.browser.snapshot import KeysError, format_snapshot, to_playwright_keys
-from desktop_ai_agent.safety import SafetyPolicy
-from desktop_ai_agent.tools.browser import BrowserClickArgs
+from friday.browser import Browser, BrowserError, actions
+from friday.browser.snapshot import KeysError, format_snapshot, to_playwright_keys
+from friday.safety import SafetyPolicy
+from friday.tools.browser import BrowserClickArgs
 
 
 @pytest.mark.parametrize(
@@ -109,7 +109,7 @@ def element_id(snapshot: str, kind: str, name: str) -> int:
 async def test_real_browser_open_read_type_click_select_and_navigate(
     site: str, tmp_path: Path
 ) -> None:
-    browser = BrowserController(tmp_path / "profile", headless=True)
+    browser = Browser(tmp_path / "profile", headless=True)
     try:
         try:
             page = await browser.open(site, new_tab=False)
@@ -120,26 +120,30 @@ async def test_real_browser_open_read_type_click_select_and_navigate(
         assert "Hidden button" not in page
 
         search = element_id(page, "input", "Search")
-        typed = await browser.type(search, "red shoes", submit=False, replace=True)
+        typed = await actions.type_text(browser, search, "red shoes", submit=False, replace=True)
         assert '= "red shoes"' in typed
 
-        clicked = await browser.click(element_id(typed, "button", "Search now"), double=False)
+        clicked = await actions.click(
+            browser, element_id(typed, "button", "Search now"), double=False
+        )
         assert "You searched: red shoes" in clicked
 
         dropdown = int(re.search(r"\[(\d+)\] select", clicked).group(1))  # type: ignore[union-attr]
-        selected = await browser.select(dropdown, "Large")
+        selected = await actions.select(browser, dropdown, "Large")
         assert '= "Large"' in selected
 
         box = element_id(selected, "checkbox", "Gift wrap")
-        assert "[checked]" in await browser.click(box, double=False)
+        assert "[checked]" in await actions.click(browser, box, double=False)
 
-        moved = await browser.click(element_id(page, "link", "Go to other page"), double=False)
+        moved = await actions.click(
+            browser, element_id(page, "link", "Go to other page"), double=False
+        )
         assert 'Page: "Other"' in moved
-        back = await browser.back()
+        back = await actions.back(browser)
         assert 'Page: "Friday test page"' in back
         assert '0: "Friday test page"' in await browser.tabs("list", None)
 
         with pytest.raises(BrowserError, match="not on the page"):
-            await browser.click(9999, double=False)
+            await actions.click(browser, 9999, double=False)
     finally:
         await browser.close()

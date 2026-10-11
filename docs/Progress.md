@@ -49,6 +49,11 @@ Phases 1-4 are complete. Friday works from a typed chat or by voice ("Hey Friday
 - **Verifier fact check:** every name, number, date and claim in an information answer must be supported by tool output, otherwise the step is retried; the final summary may contain only supported facts.
 - Live check: "convert 0.0225 dollars into rupees" now fetches the current rate (7 calls, 20 s) instead of answering from memory; "explain recursion" still answers in 1 call (2.2 s).
 
+### Code structure refactor
+- Package renamed from `desktop_ai_agent` to `friday`; `python -m friday` also works.
+- Eight domain folders: agent, tools, desktop, browser, voice, safety, monitoring, cli. `agent/` holds only the harness core (loop, llm, prompts); `cli/` holds only text chat and `voice/` only voice mode; `__main__.py` routes between them. Tests are flat files in `tests/`.
+- Behaviour unchanged: all 164 tests pass.
+
 ## How the agent works
 
 1. **Triage + plan (one call, low thinking):** answers directly if the message needs no PC access; otherwise produces the fewest steps, each with an observable expected outcome.
@@ -89,9 +94,26 @@ After the speed work the same two tasks took 7 calls each instead of 10 and 9, a
 | Browser control | Playwright driving the installed Chrome or Edge |
 | Quality | pytest, pytest-asyncio, ruff, pyright (strict) |
 
-## Layout (`src/desktop_ai_agent/`)
+## Layout
 
-`llm/` Gemini client · `agent/` loop, state, prompts · `tools/` registry and PC tools · `safety/` policy and audit log · `obs/` events, traces, metrics · `voice/` audio, mic, wake word, hotkey, player, session · `gui/` UI Automation, input, apps, screenshots, vision · `browser/` Playwright controller and page snapshots · `cli/` chat, voice mode, reports · `env.py` system discovery · `config.py` settings. Tests in `tests/`.
+Package `friday`: eight folders, one per domain, with files named for what they hold.
+
+```
+src/friday/
+  __main__.py  the `friday` command: text chat (cli/) or voice mode (voice/)
+  app.py       wiring: model, tools, safety, agent
+  config.py    settings from .env
+  agent/       loop (Plan/Act/Observe/Verify/Recover + run state), llm (interface + Gemini), prompts
+  tools/       registry, files, shell, system, desktop, browser
+  desktop/     automation, windows, input, elements, apps, screen, vision
+  browser/     session, actions, snapshot
+  voice/       chat, session, microphone, speech_to_text, text_to_speech, wake_word, hotkey
+  safety/      policy, approvals, audit
+  monitoring/  events, metrics, tracing
+  cli/         chat, display (text chat mode only)
+tests/         flat test files (fake LLM, real PowerShell, files, hotkey, headless browser)
+docs/          Product.md (vision and phases), Progress.md (what is built)
+```
 
 ## How to use
 

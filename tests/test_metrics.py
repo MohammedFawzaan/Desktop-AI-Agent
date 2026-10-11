@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from desktop_ai_agent.obs import CallRecord, estimate_cost, price_for
+from friday.monitoring import CallRecord, estimate_cost, price_for
 
 
 def rec(model: str, i: int = 1_000_000, o: int = 0, t: int = 0) -> CallRecord:

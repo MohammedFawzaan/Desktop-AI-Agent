@@ -7,8 +7,7 @@ from typing import Any
 from google.genai import types
 from pydantic import BaseModel
 
-from desktop_ai_agent.agent.state import Plan, Step, Verdict
-from desktop_ai_agent.llm.base import (
+from friday.agent.llm import (
     CallInfo,
     LLMResponse,
     T,
@@ -17,6 +16,8 @@ from desktop_ai_agent.llm.base import (
     ToolSpec,
     Usage,
 )
+from friday.agent.loop import Plan, Step, Verdict
+from friday.tools.registry import Decision
 
 INFO = CallInfo(Usage(10, 5, 0), "fake-model", 0.01)
 
@@ -112,3 +113,8 @@ class FakeLLM:
         item = queue.popleft()
         assert isinstance(item, schema)
         return item, INFO
+
+
+async def allow_all(tool: Any, args: Any) -> Decision:
+    """An approver that allows every tool call (for testing tools directly)."""
+    return Decision(True)
