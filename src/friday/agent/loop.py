@@ -1,7 +1,7 @@
 """The agent harness: Plan -> Act -> Observe -> Verify -> Recover -> Continue/Finish.
 
-Contents, top to bottom: the run's data (plan, verdict, budget, run state), the grounding check
-for time-sensitive questions, and the `Agent` that drives the phases and makes every model call.
+Contents, top to bottom: the run's data (plan, verdict, budget, run state), the check for
+time-sensitive questions, and the `Agent` that drives the phases and makes every model call.
 """
 
 from __future__ import annotations
@@ -67,6 +67,14 @@ class Plan(BaseModel):
             "to the user, with steps left empty. Otherwise leave empty."
         ),
     )
+    search_query: str = Field(
+        default="",
+        description=(
+            "Only when the message is a question that needs current or online information and "
+            "no action on the PC: a precise web search query that answers it, with steps and "
+            "direct_answer left empty."
+        ),
+    )
     steps: list[Step] = Field(default_factory=list[Step], max_length=12)
     success_criteria: str = Field(
         default="", description="Observable conditions that prove the whole goal is achieved."
@@ -74,8 +82,8 @@ class Plan(BaseModel):
 
     @model_validator(mode="after")
     def _needs_steps_or_answer(self) -> Plan:
-        if not self.steps and not self.direct_answer.strip():
-            raise ValueError("Provide steps, or direct_answer when no tools are needed.")
+        if not self.steps and not self.direct_answer.strip() and not self.search_query.strip():
+            raise ValueError("Provide steps, a search_query, or a direct_answer.")
         return self
 
 
@@ -167,7 +175,6 @@ class RunState:
     summary: str = ""
     retries: int = 0
     voice: bool = False
-    grounding_retry: bool = False
     session: tuple[SessionTurn, ...] = ()
     calls: list[CallRecord] = field(default_factory=list[CallRecord])
     tool_log: list[ToolRecord] = field(default_factory=list[ToolRecord])
@@ -233,12 +240,6 @@ _FRESH = re.compile(
     r"|\bconvert\b.*\b(dollars?|rupees?|euros?|pounds?|yen|usd|inr|eur|gbp|currency)\b"
     r"|\b20[2-9]\d\b",
     re.IGNORECASE,
-)
-
-LOOKUP_NOTE = (
-    "Your previous plan answered from memory, but this question depends on current or changing "
-    "information. Plan a step that looks it up (for example on the web) and answer only from "
-    "what you find."
 )
 
 
@@ -325,7 +326,7 @@ class Agent:
                         self._emit(state, "thinking")
                     plan = await self._plan(state)
                     if not plan.steps:
-                        state.summary = plan.direct_answer.strip()
+                        state.summary = await self._answer(state, plan)
                         phase = Phase.FINISH
                         continue
                     ctx = self._begin_step(state)
@@ -371,19 +372,7 @@ class Agent:
     # ---- Plan -------------------------------------------------------------------------------
 
     async def _plan(self, state: RunState) -> Plan:
-        """Make (or remake) the plan. A time-sensitive question answered from memory is planned
-        once more, as a lookup."""
-        await self._make_plan(state)
-        plan = state.require_plan()
-        if not plan.steps and not state.grounding_retry and needs_fresh_data(state.goal):
-            state.grounding_retry = True
-            state.failures.append(LOOKUP_NOTE)
-            self._emit(state, "grounding")
-            await self._make_plan(state)
-            plan = state.require_plan()
-        return plan
-
-    async def _make_plan(self, state: RunState) -> None:
+        """Make (or remake) the plan: steps, or a question answered straight away."""
         plan = await self._structured(
             state,
             system=prompts.PLAN_SYSTEM,
@@ -396,7 +385,7 @@ class Agent:
         state.step_index = 0
         state.step_attempts = 0
         if not plan.steps:  # a plain answer: nothing to announce
-            return
+            return plan
         if not state.replans:
             self._emit(state, "phase", phase="plan")
         self._emit(
@@ -405,6 +394,28 @@ class Agent:
             steps=[s.model_dump() for s in plan.steps],
             success_criteria=plan.success_criteria,
         )
+        return plan
+
+    async def _answer(self, state: RunState, plan: Plan) -> str:
+        """Answer a question without steps. Anything that can change is answered from a live
+        web search, even when the planner tried to answer it from memory."""
+        query = plan.search_query.strip()
+        if not query and needs_fresh_data(state.goal):
+            query = state.goal
+        if not query:
+            return plan.direct_answer.strip()
+        self._emit(state, "search", query=query)
+        resp = await self._generate(
+            state,
+            system=prompts.SEARCH_SYSTEM,
+            contents=[user_text(prompts.search_prompt(state, query))],
+            web_search=True,
+            purpose="search",
+        )
+        answer = resp.text or "I could not find that on the web."
+        if resp.sources and not state.voice:
+            answer += "\n\nSources: " + ", ".join(s.title for s in resp.sources[:5])
+        return answer
 
     def _begin_step(self, state: RunState) -> StepContext:
         return StepContext(contents=[user_text(prompts.step_prompt(state))])
@@ -615,11 +626,12 @@ class Agent:
         contents: Sequence[types.Content],
         tools: Sequence[ToolSpec] = (),
         thinking: Thinking = Thinking.LOW,
+        web_search: bool = False,
         purpose: str,
     ) -> LLMResponse:
         self._count_call(state)
         resp = await self._llm.generate(
-            system=system, contents=contents, tools=tools, thinking=thinking
+            system=system, contents=contents, tools=tools, thinking=thinking, web_search=web_search
         )
         self._record_call(state, purpose, resp.info)
         return resp
@@ -663,7 +675,7 @@ class Agent:
         """Log a tool call (and any model calls it made, such as vision) and show it live."""
         for info in result.calls:
             state.llm_calls += 1
-            self._record_call(state, "vision", info)
+            self._record_call(state, result.calls_purpose, info)
         state.tool_log.append(
             ToolRecord(
                 state.step_index + 1,

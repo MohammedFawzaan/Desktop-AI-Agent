@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from friday.agent.loop import Agent, Budget, RunResult, SessionTurn
+from friday.agent.loop import Agent, Budget, Plan, RunResult, SessionTurn
 from friday.monitoring import Event
 from friday.tools import Risk, ToolRegistry
-from tests.fakes import FakeLLM, act_turn, answer, call, plan, say, submit, verdict
+from tests.fakes import FakeLLM, act_turn, answer, call, found, plan, say, submit, verdict
 
 
 class Recorder:
@@ -297,7 +297,7 @@ async def test_llm_calls_made_inside_a_tool_count_in_the_metrics() -> None:
     @reg.tool(risk=Risk.READ)
     async def look() -> ToolResult:
         """Pretend vision tool."""
-        return replace(ToolResult.success("a red button"), calls=(INFO,))
+        return replace(ToolResult.success("a red button"), calls=(INFO,), calls_purpose="vision")
 
     llm = FakeLLM().queue(
         plan("look", "change it"),
@@ -314,22 +314,32 @@ async def test_llm_calls_made_inside_a_tool_count_in_the_metrics() -> None:
 
 async def test_time_sensitive_questions_are_never_answered_from_memory() -> None:
     llm = FakeLLM().queue(
-        answer("He was detained."),  # the model tries to answer a news question from memory
-        plan("look it up"),
-        act_turn(call("check_thing")),
-        say("Per the article: detained on 9 October."),
+        answer("He was detained."),  # the planner tries to answer a news question from memory
+        found("Reuters reports he was released on 10 October.", "Reuters"),
     )
     rec = Recorder()
-    result = await Agent(llm, make_tools(), budget=Budget(verify_probes=0), sink=rec).run(
+    result = await Agent(llm, make_tools(), sink=rec).run(
         "What happened to Abhijit Dipke on 9 October 2026?"
     )
-    assert result.status == "success" and llm.structured_calls == 2
-    assert any(e.kind == "grounding" for e in rec.events)
-    assert "depends on current" in llm.seen[1]
+    assert result.status == "success" and result.llm_calls == 2 and llm.web_searches == 1
+    assert result.summary.startswith("Reuters reports") and "Sources: Reuters" in result.summary
+    assert [c.purpose for c in result.calls] == ["plan", "search"]
+    assert any(e.kind == "search" for e in rec.events)
+
+
+async def test_questions_needing_the_web_take_one_search_not_a_browser_task() -> None:
+    llm = FakeLLM().queue(
+        Plan(search_query="USD to INR exchange rate today"),
+        found("1 USD = 96.78 INR as of 12 October 2026.", "XE", "Wise"),
+    )
+    result = await Agent(llm, make_tools()).run("What's the dollar rate today?", voice=True)
+    assert result.status == "success" and result.llm_calls == 2 and llm.web_searches == 1
+    assert result.summary == "1 USD = 96.78 INR as of 12 October 2026."  # no sources read aloud
 
 
 async def test_stable_knowledge_still_gets_one_call() -> None:
     llm = FakeLLM().queue(answer("Recursion is a function calling itself."))
     rec = Recorder()
     result = await Agent(llm, make_tools(), sink=rec).run("Explain recursion simply")
-    assert result.llm_calls == 1 and not any(e.kind == "grounding" for e in rec.events)
+    assert result.llm_calls == 1 and llm.web_searches == 0
+    assert not any(e.kind == "search" for e in rec.events)

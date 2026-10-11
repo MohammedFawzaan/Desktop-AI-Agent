@@ -45,6 +45,7 @@ class ToolResult:
     error: str = ""
     duration_s: float = 0.0
     calls: tuple[CallInfo, ...] = ()  # LLM calls made inside the tool
+    calls_purpose: str = "tool"  # how those calls show up in the metrics, e.g. "vision"
 
     @classmethod
     def success(cls, value: Any) -> ToolResult:

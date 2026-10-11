@@ -32,7 +32,7 @@ Each step runs in a small fresh context, with capped retries, re-plans and budge
 | 3 | **Voice control:** "Hey Friday" wake word and hotkey, Gemini speech-to-text, streamed text-to-speech | Done |
 | 4 | **GUI and browser control:** see and operate desktop apps (UI Automation, screenshot + vision fallback) and websites in Friday's own browser (Playwright) | Done |
 | 5 | **Agent memory:** persistent long-term memory of preferences, facts and past work | Next |
-| 6 | **Web search and internet access:** search and information gathering on top of the phase 4 browser | Planned |
+| 6 | **Web search and internet access:** live Google search answers with sources, a `web_search` tool, reading pages without the browser (`fetch_page`); the browser stays for interactive sites | Done |
 | 7 | **Frontend GUI app** for chatting, voice, history, approvals and metrics | Planned |
 | 8 | **Agent harness improvements:** the agentic loop, tools, memory, reliability and speed | Planned |
 | 9 | **Deployment:** installer, packaging, start with Windows | Last |
@@ -51,8 +51,8 @@ Focus for now is the core harness: the loop, its tools and its memory. Larger ad
 | Safety | Pattern-based policy gate, Recycle Bin deletes, JSONL audit log | |
 | Interface | typer and rich terminal | Frontend GUI app (technology to be decided) |
 | Memory | Last 6 tasks per session | Persistent store (to be decided) |
-| Web | Playwright browser control (installed Chrome or Edge) | Web search (provider to be decided) |
-| Quality | pytest, ruff, pyright (strict), 164 tests | |
+| Web | Gemini Google Search grounding, httpx page reading, Playwright browser control (installed Chrome or Edge) | |
+| Quality | pytest, ruff, pyright (strict), 171 tests | |
 | Delivery | Run from source with uv | Packaged installer (to be decided) |
 
 ## Success measures

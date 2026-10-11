@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from google.genai import types
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from friday.agent.llm import (
     CallInfo,
     LLMResponse,
+    Source,
     T,
     Thinking,
     ToolCall,
@@ -35,6 +37,12 @@ def act_turn(*calls: ToolCall) -> LLMResponse:
 def say(text: str) -> LLMResponse:
     content = types.Content(role="model", parts=[types.Part(text=text)])
     return LLMResponse(content, text, (), INFO)
+
+
+def found(text: str, *titles: str) -> LLMResponse:
+    """A search-grounded answer, with one source per title."""
+    sources = tuple(Source(t, f"https://{t.lower()}/page") for t in titles)
+    return replace(say(text), sources=sources)
 
 
 def submit(status: str = "passed", summary: str = "") -> LLMResponse:
@@ -73,6 +81,7 @@ class FakeLLM:
         self.seen: list[str] = []
         self.tool_names: list[list[str]] = []
         self.structured_calls = 0
+        self.web_searches = 0
 
     def queue(self, *items: LLMResponse | BaseModel) -> FakeLLM:
         for item in items:
@@ -89,8 +98,10 @@ class FakeLLM:
         contents: Sequence[types.Content],
         tools: Sequence[ToolSpec] = (),
         thinking: Thinking = Thinking.LOW,
+        web_search: bool = False,
     ) -> LLMResponse:
         self.generate_calls += 1
+        self.web_searches += int(web_search)
         self.tool_names.append([t.name for t in tools])
         if not self.turns:
             raise AssertionError("FakeLLM: no scripted act turn left")

@@ -14,6 +14,7 @@ Built in Python on Google's Gemini models, with its own agent loop instead of a 
 
 - **Acts on your real PC.** Reads, writes, lists and searches files; runs PowerShell commands; discovers your folders and hardware on its own (nothing is hard-coded).
 - **Uses your apps.** Opens apps by name, reads their buttons and fields, clicks, types and presses shortcuts (Windows UI Automation), with a screenshot + vision fallback.
+- **Searches the web.** Questions about anything that can change (news, prices, rates, weather) are answered from a live Google search, with sources. Pages can be read directly without opening a browser.
 - **Uses websites.** Has its own browser window (Playwright on your installed Chrome or Edge, separate profile) to open pages, read them, click, fill forms and search.
 - **Plans, acts, verifies, recovers.** Every task runs through Plan, Act, Observe, Verify, Recover. A task only counts as done when the result is checked against real system state; failures are retried or re-planned.
 - **Answers questions instantly.** Greetings, facts and advice are answered directly in one call (about 2 seconds), with no planning or tools.
@@ -85,7 +86,7 @@ Every non-read action is written to `runs/audit.jsonl`. The policy is a pattern-
 ## How it works
 
 ```
-message -> triage + plan (1 call) -> direct answer, or steps
+message -> triage + plan (1 call) -> direct answer, live web search answer, or steps
 steps:  Act (tools) -> Observe -> Verify (independent check) -> Recover (retry / replan) -> Finish
 ```
 
@@ -99,7 +100,7 @@ src/friday/
   app.py       wiring: model, tools, safety, agent
   config.py    settings from .env
   agent/       loop (Plan/Act/Observe/Verify/Recover + run state), llm (interface + Gemini), prompts
-  tools/       registry, files, shell, system, desktop, browser
+  tools/       registry, files, shell, system, web, desktop, browser
   desktop/     automation, windows, input, elements, apps, screen, vision
   browser/     session, actions, snapshot
   voice/       chat, session, microphone, speech_to_text, text_to_speech, wake_word, hotkey

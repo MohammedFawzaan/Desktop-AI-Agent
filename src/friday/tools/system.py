@@ -103,6 +103,19 @@ def _drives() -> list[str]:
     return lines
 
 
+def _region() -> str:
+    """The country set in Windows (Settings > Time & language > Region) and the format locale."""
+    country = ctypes.create_unicode_buffer(16)
+    locale = ctypes.create_unicode_buffer(85)
+    kernel32 = ctypes.windll.kernel32
+    has_country = kernel32.GetUserDefaultGeoName(country, len(country)) > 0
+    has_locale = kernel32.GetUserDefaultLocaleName(locale, len(locale)) > 0
+    return (
+        f"{country.value if has_country else 'unknown'} "
+        f"(regional format {locale.value if has_locale else 'unknown'})"
+    )
+
+
 def system_context() -> str:
     """Current facts about this PC, gathered fresh on every call."""
     folders = "\n".join(
@@ -125,6 +138,7 @@ def system_context() -> str:
         f"Known folders (real locations):\n{folders}",
         "Shell used by run_command: Windows PowerShell",
         f"Local time: {now.isoformat(timespec='seconds')} ({now.tzname()})",
+        f"Country (Windows region setting): {_region()}",
     ]
     return "\n".join(lines)
 
@@ -132,7 +146,8 @@ def system_context() -> str:
 def register_system_tools(registry: ToolRegistry) -> None:
     @registry.tool(risk=Risk.READ)
     def get_system_context() -> str:
-        """Discover facts about this PC: OS, hardware, user, drives, current time, and the real
+        """Discover facts about this PC: OS, hardware, user, drives, current time and time zone,
+        the user's country, and the real
         locations of Desktop, Documents, Downloads, Pictures, Music and Videos. Call this before
         using any path or system detail you do not already know; never guess them."""
         return system_context()

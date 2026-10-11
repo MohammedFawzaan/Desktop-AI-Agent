@@ -69,6 +69,14 @@ class CallInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class Source:
+    """A web page a search-grounded answer was based on."""
+
+    title: str
+    url: str
+
+
+@dataclass(frozen=True, slots=True)
 class LLMResponse:
     # Raw model turn. Append it to history verbatim: it carries the thought signatures
     # Gemini needs to keep its reasoning chain intact across tool calls.
@@ -76,6 +84,7 @@ class LLMResponse:
     text: str
     tool_calls: tuple[ToolCall, ...]
     info: CallInfo
+    sources: tuple[Source, ...] = ()  # set when the answer used Google Search
 
     @property
     def usage(self) -> Usage:
@@ -98,6 +107,7 @@ class LLM(Protocol):
         contents: Sequence[types.Content],
         tools: Sequence[ToolSpec] = (),
         thinking: Thinking = Thinking.LOW,
+        web_search: bool = False,
     ) -> LLMResponse: ...
 
     async def generate_structured(
@@ -210,7 +220,18 @@ def _parse(resp: types.GenerateContentResponse, model: str) -> LLMResponse:
         thought_tokens=(meta.thoughts_token_count or 0) if meta else 0,
     )
     text = "".join(text_parts).strip()
-    return LLMResponse(cand.content, text, tuple(calls), CallInfo(usage, model))
+    return LLMResponse(cand.content, text, tuple(calls), CallInfo(usage, model), _sources_of(cand))
+
+
+def _sources_of(cand: types.Candidate) -> tuple[Source, ...]:
+    """The pages Google Search grounding used, without duplicates."""
+    meta = cand.grounding_metadata
+    sources: dict[str, Source] = {}
+    for chunk in (meta.grounding_chunks if meta else None) or []:
+        web = chunk.web
+        if web is not None and web.uri and web.uri not in sources:
+            sources[web.uri] = Source(web.title or web.domain or web.uri, web.uri)
+    return tuple(sources.values())
 
 
 R = TypeVar("R")
@@ -429,9 +450,16 @@ class GeminiLLM:
         contents: Sequence[types.Content],
         tools: Sequence[ToolSpec] = (),
         thinking: Thinking = Thinking.LOW,
+        web_search: bool = False,
     ) -> LLMResponse:
+        """`web_search=True` lets Gemini search Google and answer from live results (with
+        `sources`); it is used on its own, never together with `tools`."""
         config = self._config(system, thinking)
-        if tools:
+        if web_search:
+            if tools:
+                raise ValueError("web_search cannot be combined with function tools.")
+            config.tools = [types.Tool(google_search=types.GoogleSearch())]
+        elif tools:
             config.tools = [
                 types.Tool(
                     function_declarations=[

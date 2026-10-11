@@ -4,7 +4,7 @@ What is built and working so far in Friday, the autonomous Windows AI agent. Las
 
 ## Status
 
-Phases 1-4 are complete. Friday works from a typed chat or by voice ("Hey Friday" / hotkey), acts on the real PC through files, PowerShell, desktop app interfaces and her own browser, checks her own work, and shows detailed metrics after every task. 164 automated tests pass (including a real headless browser session and request racing); ruff and strict pyright are clean.
+Phases 1-4 and 6 are complete (phase 5, memory, is next). Friday works from a typed chat or by voice ("Hey Friday" / hotkey), acts on the real PC through files, PowerShell, desktop app interfaces and her own browser, searches the web live, checks her own work, and shows detailed metrics after every task. 171 automated tests pass (including a real headless browser session and request racing); ruff and strict pyright are clean.
 
 ## What was built
 
@@ -42,10 +42,19 @@ Phases 1-4 are complete. Friday works from a typed chat or by voice ("Hey Friday
 - **Metrics:** vision calls made inside tools are counted in the token and cost report.
 - **Speed work after adding 20 tools:** each plan step names the tool groups it needs ('pc', 'apps', 'web') and only those are sent to the model (all of them on a retry); older tool outputs inside a step are trimmed; a call that runs unusually long (7 s at low thinking) is raced by a duplicate request and the first answer wins, because Gemini occasionally took 15-16 s on calls that normally take 2 s; fixed waits after GUI and browser actions were shortened and page snapshots made smaller.
 
+### Phase 6 - Web search and internet access
+- **Questions answered from a live search:** the planner now has three choices: answer directly (stable knowledge), `search_query` (a question whose answer can change), or steps. A search question is answered with one Gemini call that has Google Search grounding turned on; the answer lists its sources (not read aloud in voice mode).
+- **Safety net:** if the planner still answers a time-sensitive question from memory (news, latest, today, price, rate, weather, a recent year...), Friday answers it from a live search instead.
+- **`web_search` tool:** a sourced answer from live Google results in one call, with source links, for multi-step tasks. Its model call shows up as "search" in the metrics.
+- **`fetch_page` tool:** reads a page's text directly over HTTP (httpx plus a small HTML-to-text extractor), no browser needed; refuses non-web files and asks for the browser when a page needs JavaScript.
+- **Browser only for interaction:** the actor uses `web_search` and `fetch_page` for information and keeps the Playwright browser for clicks, logins and forms (DuckDuckGo in the browser is only a fallback).
+- **System context gives the country:** `get_system_context` now includes the Windows region (e.g. IN) next to the local time and time zone, so "the price of dollars" means INR without extra commands.
+- Live check: "What's the current price of dollars?" went from 13 calls, 63k tokens, 37 s, about $0.05 (browser) to 5 calls, 12.5k tokens, about $0.01; "latest AI news today" is answered in 2 calls with sources.
+
 ### Grounding: no stale or invented answers
 - **Planner rules:** only stable knowledge (concepts, maths, code, advice, small talk) is answered from memory. News, today/latest/recent, prices, exchange rates, weather, scores, versions, what a real person or company did recently, and this PC's state are always looked up. Conversation notes are treated as summaries, not sources.
-- **Code guard:** if a message looks time-sensitive (keywords such as news, latest, today, price, rate, weather, or a recent year) and the planner still answers from memory, Friday re-plans once with an instruction to look it up.
-- **Research rules for the actor:** search with DuckDuckGo (Google blocks automated browsers), open a reliable source, answer only from what the tools showed, say "not found" instead of guessing, mention source and recency.
+- **Code guard:** if a message looks time-sensitive (keywords such as news, latest, today, price, rate, weather, or a recent year) and the planner still answers from memory, Friday answers it from a live web search instead (phase 6).
+- **Research rules for the actor:** search with `web_search`, read sources with `fetch_page` (the browser with DuckDuckGo only as a fallback), answer only from what the tools showed, say "not found" instead of guessing, mention source and recency.
 - **Verifier fact check:** every name, number, date and claim in an information answer must be supported by tool output, otherwise the step is retried; the final summary may contain only supported facts.
 - Live check: "convert 0.0225 dollars into rupees" now fetches the current rate (7 calls, 20 s) instead of answering from memory; "explain recursion" still answers in 1 call (2.2 s).
 
@@ -104,7 +113,7 @@ src/friday/
   app.py       wiring: model, tools, safety, agent
   config.py    settings from .env
   agent/       loop (Plan/Act/Observe/Verify/Recover + run state), llm (interface + Gemini), prompts
-  tools/       registry, files, shell, system, desktop, browser
+  tools/       registry, files, shell, system, web, desktop, browser
   desktop/     automation, windows, input, elements, apps, screen, vision
   browser/     session, actions, snapshot
   voice/       chat, session, microphone, speech_to_text, text_to_speech, wake_word, hotkey

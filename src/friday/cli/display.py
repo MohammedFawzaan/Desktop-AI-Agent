@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import sys
 from collections import defaultdict
 from dataclasses import asdict
 from typing import Any, Literal
@@ -16,6 +18,9 @@ from friday.monitoring import Event
 from friday.monitoring.metrics import estimate_cost
 from friday.safety import ApprovalRequest
 
+# Never crash on a character the terminal cannot show (e.g. the rupee sign in a legacy console).
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(errors="replace")  # pyright: ignore[reportUnknownMemberType]
 console = Console()
 
 _PHASE_STYLE = {
@@ -44,8 +49,8 @@ class ConsoleSink:
                 console.print(f"[{style}]>> {d['phase'].upper()}[/{style}]")
             case "thinking":
                 console.print("[dim]thinking...[/dim]")
-            case "grounding":
-                console.print("[dim]this needs current information; looking it up...[/dim]")
+            case "search":
+                console.print(f"[dim]searching the web: {d['query']}[/dim]")
             case "plan":
                 for i, step in enumerate(d["steps"], 1):
                     console.print(f"   {i}. {step['description']}")

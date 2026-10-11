@@ -37,7 +37,9 @@ def test_stable_questions_are_not_flagged(message: str) -> None:
 
 
 def test_prompts_carry_the_grounding_rules() -> None:
-    assert "never answer from memory" in prompts.PLAN_SYSTEM
-    assert "html.duckduckgo.com" in prompts.ACT_SYSTEM
+    assert "Never answer these from memory" in prompts.PLAN_SYSTEM
+    assert "search_query" in prompts.PLAN_SYSTEM
+    assert "web_search" in prompts.ACT_SYSTEM and "fetch_page" in prompts.ACT_SYSTEM
+    assert "never from memory" in prompts.SEARCH_SYSTEM
     assert "must appear in a tool output" in prompts.ACT_SYSTEM
     assert "supported by the tool outputs" in prompts.VERIFY_SYSTEM

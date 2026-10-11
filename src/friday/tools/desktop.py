@@ -100,7 +100,7 @@ def register_desktop_tools(registry: ToolRegistry, desktop: Desktop, llm: LLM) -
         canvases, custom-drawn apps). Answers the question and gives click(x, y) positions."""
         shot = await desktop.screenshot(args.window)
         text, info = await inspect(llm, shot, args.question)
-        return replace(ToolResult.success(text), calls=(info,))
+        return replace(ToolResult.success(text), calls=(info,), calls_purpose="vision")
 
     @registry.tool(group="apps", risk=Risk.WRITE, timeout_s=45)
     async def open_app(args: OpenAppArgs) -> str:

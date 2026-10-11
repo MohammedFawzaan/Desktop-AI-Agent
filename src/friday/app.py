@@ -19,6 +19,7 @@ from friday.tools.files import register_file_tools
 from friday.tools.registry import ToolRegistry
 from friday.tools.shell import register_shell_tools
 from friday.tools.system import register_system_tools
+from friday.tools.web import register_web_tools
 
 RUNS_DIR = Path("runs")
 
@@ -76,6 +77,7 @@ def build_app(
     register_system_tools(registry)
     register_file_tools(registry)
     register_shell_tools(registry)
+    register_web_tools(registry, llm)
     if desktop is not None:
         register_desktop_tools(registry, desktop, llm)
     if browser is not None:
