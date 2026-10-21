@@ -1,9 +1,5 @@
-"""System tool: discover facts about this PC at runtime (OS, hardware, user, real folder
-locations) instead of guessing them.
-
-Nothing here is hard-coded per machine. The agent reads it through the `get_system_context`
-tool whenever it needs it; it is never pasted into prompts.
-"""
+"""System tool: facts about this PC (OS, hardware, user, real folder locations, time, country),
+read fresh at runtime so the agent never has to guess them."""
 
 from __future__ import annotations
 
@@ -13,7 +9,6 @@ import os
 import platform
 import shutil
 import socket
-import sys
 from ctypes import wintypes
 from datetime import datetime
 from functools import cache
@@ -55,8 +50,8 @@ class _MemoryStatus(ctypes.Structure):
     ]
 
 
-def _windows_known_folder(folder_id: str) -> Path | None:
-    windll = ctypes.windll  # type: ignore[attr-defined]
+def _known_folder(folder_id: str) -> Path | None:
+    windll = ctypes.windll
     guid = _GUID()
     if windll.ole32.CLSIDFromString(folder_id, ctypes.byref(guid)) != 0:
         return None
@@ -74,26 +69,22 @@ def known_folders() -> dict[str, Path]:
     """Real locations of the user's folders (Desktop is often redirected into OneDrive)."""
     folders: dict[str, Path] = {}
     for name, folder_id in _FOLDER_IDS.items():
-        found = _windows_known_folder(folder_id) if sys.platform == "win32" else None
-        folders[name] = found or (Path.home() / name)
+        folders[name] = _known_folder(folder_id) or (Path.home() / name)
     return folders
 
 
 def _memory_gb() -> tuple[float, float] | None:
-    if sys.platform != "win32":
-        return None
     status = _MemoryStatus()
     status.dwLength = ctypes.sizeof(_MemoryStatus)
-    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
         return None
     gb = 1024**3
     return status.ullTotalPhys / gb, status.ullAvailPhys / gb
 
 
 def _drives() -> list[str]:
-    roots = [Path(d) for d in os.listdrives()] if hasattr(os, "listdrives") else [Path.cwd().anchor]
     lines: list[str] = []
-    for root in roots:
+    for root in os.listdrives():
         try:
             usage = shutil.disk_usage(root)
         except OSError:
@@ -146,8 +137,7 @@ def system_context() -> str:
 def register_system_tools(registry: ToolRegistry) -> None:
     @registry.tool(risk=Risk.READ)
     def get_system_context() -> str:
-        """Discover facts about this PC: OS, hardware, user, drives, current time and time zone,
-        the user's country, and the real
-        locations of Desktop, Documents, Downloads, Pictures, Music and Videos. Call this before
-        using any path or system detail you do not already know; never guess them."""
+        """Facts about this PC: OS, hardware, user, drives, local time and time zone, the user's
+        country, and the real locations of Desktop, Documents, Downloads, Pictures, Music and
+        Videos. Call it before using any path or system detail you do not know; never guess."""
         return system_context()

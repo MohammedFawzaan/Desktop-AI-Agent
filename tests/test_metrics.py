@@ -1,23 +1,17 @@
 from __future__ import annotations
 
-from datetime import date
-
-from friday.monitoring import CallRecord, estimate_cost, price_for
+from friday.monitoring import CallRecord, estimate_cost
 
 
-def rec(model: str, i: int = 1_000_000, o: int = 0, t: int = 0) -> CallRecord:
-    return CallRecord("act", model, i, o, t, 1.0)
+def record(model: str, prompt: int = 0, output: int = 0, thinking: int = 0) -> CallRecord:
+    return CallRecord("act", model, prompt, output, thinking, 1.0)
 
 
-def test_promo_price_switches_at_2027() -> None:
-    assert price_for("gemini-3.8-flash", date(2026, 10, 1)) == (0.75, 3.75)
-    assert price_for("gemini-3.8-flash", date(2027, 1, 1)) == (1.50, 7.50)
-
-
-def test_thinking_tokens_are_billed_as_output() -> None:
-    cost = estimate_cost([rec("gemini-3.5-flash", i=0, o=500_000, t=500_000)])
+def test_cost_uses_the_price_table_and_bills_thinking_as_output() -> None:
+    cost = estimate_cost([record("gemini-3.5-flash", output=500_000, thinking=500_000)])
     assert cost == 9.00
+    assert estimate_cost([record("gemini-3.5-flash", prompt=1_000_000)]) == 1.50
 
 
-def test_unknown_model_gives_no_estimate() -> None:
-    assert estimate_cost([rec("gemini-3.5-flash"), rec("mystery-model")]) is None
+def test_an_unknown_model_gives_no_estimate() -> None:
+    assert estimate_cost([record("gemini-3.5-flash"), record("mystery-model")]) is None

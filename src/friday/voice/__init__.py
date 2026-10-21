@@ -1,11 +1,4 @@
 from friday.voice.hotkey import HotkeyError, HotkeyListener, parse_hotkey
-from friday.voice.session import VoiceCall, VoiceSession, VoiceUI
+from friday.voice.session import VoiceSession, VoiceUI
 
-__all__ = [
-    "HotkeyError",
-    "HotkeyListener",
-    "VoiceCall",
-    "VoiceSession",
-    "VoiceUI",
-    "parse_hotkey",
-]
+__all__ = ["HotkeyError", "HotkeyListener", "VoiceSession", "VoiceUI", "parse_hotkey"]

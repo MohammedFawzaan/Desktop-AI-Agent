@@ -1,66 +1,53 @@
-"""Everything the terminal shows: live progress, approval prompts, results and metrics."""
+"""What the terminal shows: live progress, approval prompts, and each answer with its metrics."""
 
 from __future__ import annotations
 
 import io
 import sys
-from collections import defaultdict
-from dataclasses import asdict
-from typing import Any, Literal
+from collections import Counter
 
-from rich import box
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
-from friday.agent.loop import Agent, RunResult
-from friday.monitoring import Event
-from friday.monitoring.metrics import estimate_cost
+from friday.agent.models import RunResult
+from friday.monitoring import Event, estimate_cost
 from friday.safety import ApprovalRequest
 
-# Never crash on a character the terminal cannot show (e.g. the rupee sign in a legacy console).
+# Never crash on a character the terminal cannot show (e.g. the rupee sign in an old console).
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(errors="replace")  # pyright: ignore[reportUnknownMemberType]
 console = Console()
 
-_PHASE_STYLE = {
-    "plan": "cyan",
-    "act": "blue",
-    "observe": "magenta",
-    "verify": "yellow",
-    "recover": "red",
-    "finish": "green",
-}
+_PHASE_COLORS = {"act": "blue", "observe": "magenta", "verify": "yellow", "recover": "red"}
+_STATUS_COLORS = {"success": "green", "failed": "red", "blocked": "yellow"}
 
 
-def short(value: object, limit: int = 80) -> str:
+def one_line(value: object, limit: int = 100) -> str:
     text = " ".join(str(value).split())
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 class ConsoleSink:
-    """Live progress while the agent works."""
+    """Prints the agent's progress as it works."""
 
     def emit(self, event: Event) -> None:
         d = event.data
         match event.kind:
-            case "phase":
-                style = _PHASE_STYLE.get(d["phase"], "white")
-                console.print(f"[{style}]>> {d['phase'].upper()}[/{style}]")
             case "thinking":
                 console.print("[dim]thinking...[/dim]")
             case "search":
                 console.print(f"[dim]searching the web: {d['query']}[/dim]")
             case "plan":
+                console.print("[cyan]>> PLAN[/cyan]")
                 for i, step in enumerate(d["steps"], 1):
-                    console.print(f"   {i}. {step['description']}")
-            case "tool" | "probe":
-                mark = "[green]ok[/green]" if d["ok"] else "[red]fail[/red]"
-                label = "check" if event.kind == "probe" else "tool"
-                console.print(
-                    f"   [dim]{label}: {d['tool']}({short(d['args'])})[/dim] {mark} "
-                    f"{short(d['output'], 110)}"
-                )
+                    console.print(f"   {i}. {step}")
+            case "phase":
+                color = _PHASE_COLORS.get(d["phase"], "green")
+                console.print(f"[{color}]>> {d['phase'].upper()}[/{color}]")
+            case "tool":
+                mark = "[green]ok[/green]" if d["ok"] else "[red]failed[/red]"
+                console.print(f"   [dim]{d['tool']}({one_line(d['args'], 80)})[/dim] {mark}")
+                console.print(f"   [dim]{one_line(d['output'])}[/dim]")
             case "verdict":
                 console.print(f"   verdict: [bold]{d['status']}[/bold] - {d['reason']}")
             case "recover":
@@ -69,159 +56,30 @@ class ConsoleSink:
                 pass
 
 
-async def confirm(request: ApprovalRequest) -> Literal["yes", "no", "always"]:
-    # Blocks the event loop on purpose: nothing else runs while the human decides.
-    style = "red" if request.dangerous else "yellow"
-    body = request.summary + (f"\n[dim]{request.reason}[/dim]" if request.reason else "")
-    console.print(Panel(body, title=f"Approval needed: {request.tool}", border_style=style))
-    options = (
-        "y = yes, n = no" if request.dangerous else "y = yes, n = no, a = always for this kind"
-    )
-    while True:
-        answer = console.input(f"[bold]Allow?[/bold] ({options}) ").strip().lower()
-        if answer in {"y", "yes"}:
-            return "yes"
-        if answer in {"n", "no", ""}:
-            return "no"
-        if answer in {"a", "always"} and not request.dangerous:
-            return "always"
+async def confirm(request: ApprovalRequest) -> bool:
+    """Ask the user before a risky action. Blocks on purpose: nothing runs while they decide."""
+    body = f"{request.summary}\n[dim]{request.reason}[/dim]"
+    console.print(Panel(body, title=f"Allow {request.tool}?", border_style="yellow"))
+    answer = console.input("[bold]Allow?[/bold] (y/n) ").strip().lower()
+    return answer in {"y", "yes"}
 
 
-def finish(agent: Agent, result: RunResult, verbose: bool) -> None:
-    """Print the answer and the metrics, and save the metrics in the trace."""
-    render_result(console, result)
-    render_metrics(console, result, verbose=verbose)
-    agent.emit_raw("metrics", metrics_dict(result))
+def show_result(result: RunResult) -> None:
+    """The answer, then one panel with the run's status, time, model calls, tokens and cost."""
+    color = _STATUS_COLORS.get(result.status, "yellow")
+    console.print(f"\n[bold {color}]{result.status.upper()}[/bold {color}]")
+    console.print(result.summary or "(no answer)")
 
-
-_STATUS_STYLE = {
-    "success": "green",
-    "failed": "red",
-    "blocked": "yellow",
-    "budget_exceeded": "yellow",
-}
-
-
-def _one_line(text: str, limit: int) -> str:
-    return short(" | ".join(part.strip() for part in text.splitlines() if part.strip()), limit)
-
-
-def _fmt_cost(result: RunResult) -> str:
+    usage = result.usage
     cost = estimate_cost(result.calls)
-    if cost is None:
-        return "n/a (unpriced model)"
-    return f"${cost:.4f} (estimate)"
-
-
-def metrics_dict(result: RunResult) -> dict[str, Any]:
-    cost = estimate_cost(result.calls)
-    return {
-        "run_id": result.run_id,
-        "status": result.status,
-        "goal": result.goal,
-        "elapsed_s": round(result.elapsed_s, 3),
-        "llm_calls": result.llm_calls,
-        "prompt_tokens": result.usage.prompt_tokens,
-        "output_tokens": result.usage.output_tokens,
-        "thought_tokens": result.usage.thought_tokens,
-        "estimated_cost_usd": cost,
-        "retries": result.retries,
-        "replans": result.replans,
-        "calls": [asdict(c) for c in result.calls],
-        "tools": [asdict(t) for t in result.tools],
-        "verdicts": [asdict(v) for v in result.verdicts],
-    }
-
-
-def render_result(console: Console, result: RunResult) -> None:
-    style = _STATUS_STYLE.get(result.status, "white")
-    console.print(f"\n[bold {style}]{result.status.upper()}[/bold {style}]")
-    console.print(result.summary or "(no summary)")
-
-
-def render_metrics(console: Console, result: RunResult, *, verbose: bool = False) -> None:
-    u = result.usage
-    llm_time = sum(c.latency_s for c in result.calls)
-    tool_time = sum(t.duration_s for t in result.tools)
-    models: dict[str, int] = defaultdict(int)
-    for c in result.calls:
-        models[c.model] += 1
-
-    summary = Table.grid(padding=(0, 2))
-    summary.add_column(style="dim")
-    summary.add_column()
-    summary.add_row("Status", f"[{_STATUS_STYLE.get(result.status, 'white')}]{result.status}[/]")
-    summary.add_row(
-        "Total time", f"{result.elapsed_s:.1f}s (LLM {llm_time:.1f}s, tools {tool_time:.1f}s)"
-    )
-    summary.add_row("Steps", f"{result.steps_completed}/{len(result.plan_steps)} completed")
-    summary.add_row("Retries / replans", f"{result.retries} / {result.replans}")
-    summary.add_row("LLM calls", str(result.llm_calls))
-    summary.add_row(
-        "Tokens",
-        f"input {u.prompt_tokens:,}  output {u.output_tokens:,}  thinking {u.thought_tokens:,}  "
-        f"total {u.prompt_tokens + u.output_tokens + u.thought_tokens:,}",
-    )
-    summary.add_row("Models", ", ".join(f"{m} x{n}" for m, n in models.items()) or "-")
-    summary.add_row("Est. cost", _fmt_cost(result))
-    console.print(Panel(summary, title="Run metrics", border_style="cyan", expand=False))
-
-    if result.calls:
-        by_purpose: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0, 0])
-        latency: dict[str, float] = defaultdict(float)
-        for c in result.calls:
-            row = by_purpose[c.purpose]
-            row[0] += 1
-            row[1] += c.prompt_tokens
-            row[2] += c.output_tokens
-            row[3] += c.thought_tokens
-            latency[c.purpose] += c.latency_s
-        table = Table(title="Tokens by phase", box=box.SIMPLE_HEAD)
-        for name, justify in (
-            ("Phase", "left"),
-            ("Calls", "right"),
-            ("Input", "right"),
-            ("Output", "right"),
-            ("Thinking", "right"),
-            ("Time", "right"),
-        ):
-            table.add_column(name, justify=justify)  # type: ignore[arg-type]
-        for purpose, (n, i, o, t) in by_purpose.items():
-            table.add_row(purpose, str(n), f"{i:,}", f"{o:,}", f"{t:,}", f"{latency[purpose]:.1f}s")
-        console.print(table)
-
-    if verbose and result.calls:
-        table = Table(title="Every LLM call", box=box.SIMPLE_HEAD)
-        for name in ("#", "Phase", "Model", "Input", "Output", "Thinking", "Time"):
-            table.add_column(name, justify="left" if name in ("Phase", "Model") else "right")
-        for n, c in enumerate(result.calls, 1):
-            table.add_row(
-                str(n), c.purpose, c.model, f"{c.prompt_tokens:,}", f"{c.output_tokens:,}",
-                f"{c.thought_tokens:,}", f"{c.latency_s:.1f}s",
-            )  # fmt: skip
-        console.print(table)
-
-    if result.tools:
-        table = Table(title="Tools called", box=box.SIMPLE_HEAD)
-        for name in ("#", "Step", "Tool", "Result", "Time"):
-            table.add_column(name, no_wrap=True)
-        table.add_column("Arguments", overflow="fold", ratio=1)
-        table.add_column("Output", overflow="fold", ratio=2)
-        for n, t in enumerate(result.tools, 1):
-            ok = "[green]ok[/green]" if t.ok else "[red]failed[/red]"
-            args = _one_line(str(t.args), 70 if not verbose else 600)
-            out = _one_line(t.output, 90 if not verbose else 600)
-            table.add_row(
-                str(n), str(t.step), t.tool, ok, f"{t.duration_s * 1000:.0f}ms", args, out
-            )
-        console.print(table)
-
-    if result.verdicts:
-        table = Table(title="Verification", box=box.SIMPLE_HEAD)
-        for name in ("Step", "Verdict", "Reason"):
-            table.add_column(name, overflow="fold")
-        for v in result.verdicts:
-            label = v.status + (" (auto, read-only)" if v.auto else "")
-            color = "green" if v.status == "passed" else "yellow"
-            table.add_row(str(v.step), f"[{color}]{label}[/{color}]", _one_line(v.reason, 120))
-        console.print(table)
+    calls_by_purpose = Counter(c.purpose for c in result.calls)
+    lines = [
+        f"Time         {result.elapsed_s:.1f}s",
+        f"Model calls  {result.llm_calls}  ("
+        + ", ".join(f"{purpose} {n}" for purpose, n in calls_by_purpose.items())
+        + ")",
+        f"Tokens       {usage.prompt_tokens:,} in, {usage.output_tokens:,} out, "
+        f"{usage.thought_tokens:,} thinking",
+        f"Cost         {'unknown' if cost is None else f'~${cost:.4f}'}",
+    ]
+    console.print(Panel("\n".join(lines), title="Metrics", border_style="dim", expand=False))

@@ -1,0 +1,71 @@
+# Safety rules for Friday's actions. Each pattern is a case-insensitive regular expression;
+# a match on any pattern in a list applies that rule. Edit this file to change what is allowed.
+
+# Credential and secret files: never read, written or deleted.
+secret_paths = [
+    '(^|[\\/])\.env(\..*)?$',
+    '[\\/]\.ssh([\\/]|$)',
+    'id_(rsa|ed25519|ecdsa|dsa)',
+    '\.(pem|key|pfx|p12|kdbx)$',
+    '[\\/]\.aws[\\/]credentials',
+    '\.git-credentials',
+    '\.(npmrc|pypirc|netrc)$',
+    '[\\/](login data|cookies)$',
+]
+
+# The same secrets mentioned inside a shell command.
+secret_mentions = [
+    '\.env\b',
+    '\.ssh\b',
+    'id_(rsa|ed25519|ecdsa|dsa)',
+    '\.(pem|key|pfx|p12|kdbx)\b',
+    '\.aws[\\/]credentials',
+    '\.git-credentials',
+    '\.(npmrc|pypirc|netrc)',
+    'login data',
+]
+
+# Shell commands that are never run.
+forbidden_commands = [
+    'format-volume',
+    '\bformat\s+[a-z]:',
+    '\b(diskpart|bcdedit|vssadmin)\b',
+    '\bcipher\s+/w',
+    '\breg(\.exe)?\s+delete\s+hk(lm|cr)',
+    'set-executionpolicy',
+    '\bnet\s+(user|localgroup)\b',
+    # downloading a script and running it straight away
+    '\b(iex|invoke-expression)\b.*\b(iwr|irm|curl|wget|invoke-webrequest|invoke-restmethod|downloadstring)\b',
+    '\b(iwr|irm|curl|wget|invoke-webrequest|invoke-restmethod)\b.*\|\s*(iex|invoke-expression)\b',
+    '\brm\s+-\w*r\w*f?\w*\s+[/\\]\s*$',
+]
+
+# Shell commands that delete, stop or change the system: always ask first.
+risky_commands = [
+    '\b(remove-item|del|erase|rd|rmdir|rm)\b',
+    '\b(shutdown|restart-computer|stop-computer)\b',
+    '\b(stop-process|taskkill|kill)\b',
+    '\breg(\.exe)?\b',
+    'regedit',
+    '(set|new|remove)-itemproperty',
+    '\b(netsh|schtasks|icacls|takeown|cacls)\b',
+    '\bsc(\.exe)?\b',
+    'clear-(content|recyclebin|eventlog|disk|item)',
+    'uninstall',
+    '\b(disable|unregister)-\w+',
+    '\b(set|stop)-service\b',
+]
+
+# Buttons and links whose name matches: always ask before clicking (in apps and on websites).
+risky_clicks = [
+    '\b(delete|remove|uninstall|erase|format|discard|wipe|reset|permanently|factory)\b',
+    "don'?t save|do not save|empty recycle bin|sign out|log out",
+    '\b(buy|pay|purchase|checkout|place order|order now|confirm order|confirm payment)\b',
+    '\b(transfer|send money|subscribe|unsubscribe)\b',
+]
+
+# Key combinations that ask first: closing windows or tabs, and deleting past the Recycle Bin.
+risky_keys = ['alt+f4', 'ctrl+w', 'ctrl+shift+w', 'shift+delete', 'shift+del']
+
+# Environment variables naming the system folders that are never written to or deleted.
+protected_folders = ['SystemRoot', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData']

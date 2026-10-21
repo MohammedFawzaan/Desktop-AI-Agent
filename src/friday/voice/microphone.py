@@ -1,5 +1,5 @@
-"""Microphone input: 16 kHz mono frames from the Windows default (WASAPI) mic, device listing
-and level checks."""
+"""Microphone input: 16 kHz mono audio from the Windows default mic (through WASAPI), handed
+out in 30 ms frames."""
 
 from __future__ import annotations
 
@@ -84,22 +84,6 @@ def resolve_input_device(spec: int | str | None) -> tuple[int | None, Any]:
         return None, None
     extra = sd.WasapiSettings(auto_convert=True) if chosen.host == "WASAPI" else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     return chosen.index, extra  # pyright: ignore[reportUnknownVariableType]
-
-
-def measure_level(spec: int | str | None, seconds: float = 3.0) -> tuple[float, int]:
-    """Record for a few seconds; returns (average level, loudest sample)."""
-    device, extra = resolve_input_device(spec)
-    rec = sd.rec(  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-        int(SAMPLE_RATE * seconds),
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="int16",
-        device=device,
-        extra_settings=extra,
-    )
-    sd.wait()  # pyright: ignore[reportUnknownMemberType]
-    samples: Pcm = np.asarray(rec, dtype=np.int16).reshape(-1)  # pyright: ignore[reportUnknownArgumentType]
-    return rms(samples), int(np.abs(samples.astype(np.int32)).max())
 
 
 class Microphone:

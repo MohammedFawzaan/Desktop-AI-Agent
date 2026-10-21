@@ -1,3 +1,5 @@
+"""Test helpers: a scripted fake LLM, shortcuts to build its answers, and a tool registry."""
+
 from __future__ import annotations
 
 from collections import defaultdict, deque
@@ -8,18 +10,9 @@ from typing import Any
 from google.genai import types
 from pydantic import BaseModel
 
-from friday.agent.llm import (
-    CallInfo,
-    LLMResponse,
-    Source,
-    T,
-    Thinking,
-    ToolCall,
-    ToolSpec,
-    Usage,
-)
-from friday.agent.loop import Plan, Step, Verdict
-from friday.tools.registry import Decision
+from friday.agent.llm import CallInfo, LLMResponse, Source, T, Thinking, ToolCall, ToolSpec, Usage
+from friday.agent.models import Plan, Step, Verdict
+from friday.tools.registry import Decision, Risk, ToolRegistry
 
 INFO = CallInfo(Usage(10, 5, 0), "fake-model", 0.01)
 
@@ -29,26 +22,21 @@ def call(name: str, **args: Any) -> ToolCall:
 
 
 def act_turn(*calls: ToolCall) -> LLMResponse:
+    """The model asks for these tool calls."""
     parts = [types.Part(function_call=types.FunctionCall(name=c.name, args=c.args)) for c in calls]
-    content = types.Content(role="model", parts=parts)
-    return LLMResponse(content, "", tuple(calls), INFO)
+    return LLMResponse(types.Content(role="model", parts=parts), "", tuple(calls), INFO)
 
 
 def say(text: str) -> LLMResponse:
+    """The model replies with plain text."""
     content = types.Content(role="model", parts=[types.Part(text=text)])
     return LLMResponse(content, text, (), INFO)
 
 
 def found(text: str, *titles: str) -> LLMResponse:
-    """A search-grounded answer, with one source per title."""
+    """A web-search answer, with one source per title."""
     sources = tuple(Source(t, f"https://{t.lower()}/page") for t in titles)
     return replace(say(text), sources=sources)
-
-
-def submit(status: str = "passed", summary: str = "") -> LLMResponse:
-    return act_turn(
-        call("submit_verdict", status=status, reason="ok", evidence="tool output", summary=summary)
-    )
 
 
 def answer(text: str) -> Plan:
@@ -63,25 +51,21 @@ def plan(*descriptions: str) -> Plan:
 
 
 def verdict(status: str = "passed", reason: str = "ok", summary: str = "") -> Verdict:
-    return Verdict(
-        status=status,  # type: ignore[arg-type]
-        reason=reason,
-        evidence="tool output shows it",
-        summary=summary,
+    return Verdict.model_validate(
+        {"status": status, "reason": reason, "evidence": "tool output", "summary": summary}
     )
 
 
 class FakeLLM:
-    """Scripted LLM: `generate` replays a queue; structured calls are queued per schema type."""
+    """Replays scripted answers: `generate` from one queue, structured calls by schema type."""
 
     def __init__(self) -> None:
         self.turns: deque[LLMResponse] = deque()
         self.structured: dict[type[BaseModel], deque[BaseModel]] = defaultdict(deque)
-        self.generate_calls = 0
-        self.seen: list[str] = []
-        self.tool_names: list[list[str]] = []
-        self.structured_calls = 0
+        self.prompts: list[str] = []  # first message of every structured call
+        self.tool_names: list[list[str]] = []  # tools offered on every generate call
         self.web_searches = 0
+        self.structured_calls = 0
 
     def queue(self, *items: LLMResponse | BaseModel) -> FakeLLM:
         for item in items:
@@ -100,11 +84,10 @@ class FakeLLM:
         thinking: Thinking = Thinking.LOW,
         web_search: bool = False,
     ) -> LLMResponse:
-        self.generate_calls += 1
-        self.web_searches += int(web_search)
         self.tool_names.append([t.name for t in tools])
+        self.web_searches += int(web_search)
         if not self.turns:
-            raise AssertionError("FakeLLM: no scripted act turn left")
+            raise AssertionError("FakeLLM: no scripted turn left")
         return self.turns.popleft()
 
     async def generate_structured(
@@ -116,8 +99,8 @@ class FakeLLM:
         thinking: Thinking = Thinking.LOW,
     ) -> tuple[T, CallInfo]:
         self.structured_calls += 1
-        first = contents[0].parts[0].text if contents and contents[0].parts else ""
-        self.seen.append(first or "")
+        parts = contents[0].parts if contents else None
+        self.prompts.append((parts[0].text if parts else None) or "")
         queue = self.structured[schema]
         if not queue:
             raise AssertionError(f"FakeLLM: no scripted {schema.__name__} left")
@@ -127,5 +110,27 @@ class FakeLLM:
 
 
 async def allow_all(tool: Any, args: Any) -> Decision:
-    """An approver that allows every tool call (for testing tools directly)."""
+    """An approver that allows every tool call."""
     return Decision(True)
+
+
+def make_tools() -> ToolRegistry:
+    """A small registry: one tool that changes something, one that reads, one that fails."""
+    tools = ToolRegistry(allow_all)
+
+    @tools.tool(risk=Risk.WRITE)
+    def do_thing() -> str:
+        """Change something."""
+        return "changed"
+
+    @tools.tool(risk=Risk.READ)
+    def check_thing() -> str:
+        """Read the state."""
+        return "state=changed"
+
+    @tools.tool(risk=Risk.WRITE)
+    def broken() -> str:
+        """Always fails."""
+        raise RuntimeError("nope")
+
+    return tools

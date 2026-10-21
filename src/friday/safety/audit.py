@@ -1,3 +1,5 @@
+"""Audit log: one JSON line per action that went through a safety decision (runs/audit.jsonl)."""
+
 from __future__ import annotations
 
 from pathlib import Path

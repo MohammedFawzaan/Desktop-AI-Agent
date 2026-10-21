@@ -9,7 +9,6 @@ from friday.voice.speech_to_text import (
     UtteranceSegmenter,
     pcm_to_wav,
 )
-from friday.voice.text_to_speech import resample, tone, wav_to_pcm
 
 
 def frame(amplitude: float) -> Pcm:
@@ -29,18 +28,9 @@ def run(segmenter: UtteranceSegmenter, frames: list[Pcm]):
     return None
 
 
-def test_wav_round_trip_and_stereo_and_raw_pcm() -> None:
-    pcm = tone(440, 0.2, rate=16_000)
-    decoded, rate = wav_to_pcm(pcm_to_wav(pcm, 16_000))
-    assert rate == 16_000 and np.array_equal(decoded, pcm)
-    raw, raw_rate = wav_to_pcm(pcm.tobytes(), raw_rate=24_000)
-    assert raw_rate == 24_000 and len(raw) == len(pcm)
-
-
-def test_resample_changes_length_proportionally() -> None:
-    pcm = tone(440, 1.0, rate=24_000)
-    assert abs(len(resample(pcm, 24_000, 16_000)) - 16_000) <= 1
-    assert resample(pcm, 24_000, 24_000) is pcm
+def test_wav_has_a_header_and_the_samples() -> None:
+    wav = pcm_to_wav(LOUD)
+    assert wav[:4] == b"RIFF" and len(wav) == 44 + len(LOUD) * 2
 
 
 def test_rms_scales_with_amplitude() -> None:

@@ -52,7 +52,7 @@ Focus for now is the core harness: the loop, its tools and its memory. Larger ad
 | Interface | typer and rich terminal | Frontend GUI app (technology to be decided) |
 | Memory | Last 6 tasks per session | Persistent store (to be decided) |
 | Web | Gemini Google Search grounding, httpx page reading, Playwright browser control (installed Chrome or Edge) | |
-| Quality | pytest, ruff, pyright (strict), 171 tests | |
+| Quality | pytest, ruff, pyright (strict), 136 tests | |
 | Delivery | Run from source with uv | Packaged installer (to be decided) |
 
 ## Success measures

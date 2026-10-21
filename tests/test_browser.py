@@ -61,10 +61,10 @@ def test_snapshot_formatting() -> None:
 
 def test_risky_web_clicks_ask_first() -> None:
     names = {1: "button Add to cart", 2: "button Place order", 3: "link Delete account"}
-    policy = SafetyPolicy(None, describe_web_element=names.get)
+    policy = SafetyPolicy(describe_web_element=names.get)
     assert policy.assess("browser_click", BrowserClickArgs(element=1)).level == "allow"
-    assert policy.assess("browser_click", BrowserClickArgs(element=2)).level == "danger"
-    assert policy.assess("browser_click", BrowserClickArgs(element=3)).level == "danger"
+    assert policy.assess("browser_click", BrowserClickArgs(element=2)).level == "ask"
+    assert policy.assess("browser_click", BrowserClickArgs(element=3)).level == "ask"
 
 
 PAGE = """<!doctype html><html><head><title>Friday test page</title></head><body>

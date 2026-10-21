@@ -135,7 +135,7 @@ def register_file_tools(registry: ToolRegistry) -> None:
             fh.write(args.content)
         return f"Wrote {len(args.content)} chars ({path.stat().st_size} bytes total) to {path}"
 
-    @registry.tool(risk=Risk.DESTRUCTIVE)
+    @registry.tool(risk=Risk.WRITE)
     def delete_path(args: PathArgs) -> str:
         """Move a file or folder to the Recycle Bin (recoverable)."""
         path = resolve_path(args.path)

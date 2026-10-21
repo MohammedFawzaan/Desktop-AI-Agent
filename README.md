@@ -20,7 +20,7 @@ Built in Python on Google's Gemini models, with its own agent loop instead of a 
 - **Answers questions instantly.** Greetings, facts and advice are answered directly in one call (about 2 seconds), with no planning or tools.
 - **Voice control.** Say "Hey Friday" or press a global hotkey, then speak. Replies are spoken back, streamed so sound starts about 1.3 seconds after the answer is ready.
 - **Safe by default.** Ordinary actions run automatically; destructive ones (deletes, killing processes, registry changes) ask first; secrets and system folders are off limits. Everything is logged.
-- **Shows its work.** After every task: tokens (input, output, thinking), tools called with their outputs, timings, verification verdicts and an estimated cost.
+- **Shows its work.** Live progress while it works, then one metrics panel per answer: time, model calls by phase, tokens and estimated cost. Every run is also traced to `runs/`.
 
 ## Requirements
 
@@ -43,11 +43,8 @@ copy .env.example .env      # then put your key in .env: GOOGLE_GEMINI_API_KEY=.
 | Command | What it does |
 |---|---|
 | `uv run friday` (or `uv run python -m friday`) | Chat in the terminal. Ctrl+C cancels a task; Ctrl+C at the prompt (or `exit`) quits |
-| `uv run friday run "<task>"` | Run one task and exit |
 | `uv run friday voice` | Voice mode: say "Hey Friday" or press **Ctrl+Alt+F**, then speak |
 | `uv run friday voice --no-wake` | Voice mode with the hotkey only (no always-on listening) |
-| `uv run friday mics` | List microphones and test your voice level |
-| add `-v` to any command | Full metrics detail |
 
 While Friday is operating an app, keep your hands off the keyboard and mouse: one keyboard is shared, so your typing could land in her window.
 
@@ -60,15 +57,17 @@ Set in `.env` (only the API key is required):
 | Variable | Default | Meaning |
 |---|---|---|
 | `GOOGLE_GEMINI_API_KEY` | none | Your Gemini API key |
-| `AGENT_MODEL` | `gemini-3.8-flash` | Main model |
-| `AGENT_FALLBACK_MODELS` | 3.7-flash, 3.5-flash, 3.5-flash-lite | Used in order if a model is overloaded (JSON list) |
-| `FRIDAY_HOTKEY` | `ctrl+alt+f` | Global voice hotkey |
+| `AGENT_MODELS` | 3.8-flash, 3.7-flash, 3.5-flash, 3.5-flash-lite | Models to use, tried in order if one is unavailable (JSON list) |
+| `STT_MODEL` / `TTS_MODEL` | `gemini-3.5-flash-lite` / `gemini-3.8-flash-tts` | Speech models |
 | `TTS_VOICE` | `Kore` | Gemini voice name (for example `Leda`, `Zephyr`, `Aoede`) |
-| `STT_MODELS` / `TTS_MODELS` | flash-lite / flash-tts | Speech models (JSON lists) |
+| `FRIDAY_HOTKEY` | `ctrl+alt+f` | Global voice hotkey |
 | `MIC_DEVICE` | Windows default | Microphone index or part of its name |
+| `MAX_LLM_CALLS`, `MAX_TURNS_PER_STEP`, `MAX_STEP_RETRIES`, `MAX_REPLANS`, `TASK_TIMEOUT_S` | 40, 15, 2, 2, 900 | Limits for one task |
 | `GUI_ENABLED` / `BROWSER_ENABLED` | `true` | Turn app control or the browser off |
 | `BROWSER_CHANNELS` | `["chrome", "msedge"]` | Installed browsers to try, in order (JSON list) |
 | `BROWSER_HEADLESS` | `false` | Run Friday's browser without a window |
+
+Model prices for the cost estimate are in `src/friday/monitoring/pricing.toml`; the safety rules are in `src/friday/safety/rules.toml`.
 
 ## Safety
 
@@ -77,11 +76,11 @@ Set in `.env` (only the API key is required):
 | Reads, new files, appends, ordinary commands | Run automatically |
 | Deletes (sent to the Recycle Bin), stopping processes, registry/service/permission changes, uninstalls, shutdown | Always ask |
 | Clicking Delete, Don't save, Buy, Pay, Checkout, Place order and similar, in apps or on websites | Always ask |
-| Closing a window, Alt+F4, Ctrl+W | Ask (can answer "always") |
-| Overwriting an existing file | Ask (can answer "always") |
+| Closing a window, Alt+F4, Ctrl+W, Shift+Delete | Always ask |
+| Overwriting an existing file | Always ask |
 | Credential files (`.env`, `.ssh`, keys), Windows and Program Files, disk formatting, download-and-execute | Refused |
 
-Every non-read action is written to `runs/audit.jsonl`. The policy is a pattern-based gate, not a sandbox, so read approval prompts carefully.
+The rules live in `src/friday/safety/rules.toml`. Every non-read action is written to `runs/audit.jsonl`. The policy is a pattern-based gate, not a sandbox, so read approval prompts carefully.
 
 ## How it works
 
@@ -96,17 +95,19 @@ Each step runs in a small fresh context. Retries and re-plans are capped, and ev
 
 ```
 src/friday/
-  __main__.py  the `friday` command: text chat (cli/) or voice mode (voice/)
+  __main__.py  the `friday` command: text chat, or `friday voice`
   app.py       wiring: model, tools, safety, agent
   config.py    settings from .env
-  agent/       loop (Plan/Act/Observe/Verify/Recover + run state), llm (interface + Gemini), prompts
+  agent/       loop (the phases), planner, verifier, context (model calls, events, budget),
+               models (Plan, Verdict, run state), llm (model interface), gemini (Gemini client),
+               prompts + system_prompts/*.md
   tools/       registry, files, shell, system, web, desktop, browser
   desktop/     automation, windows, input, elements, apps, screen, vision
   browser/     session, actions, snapshot
   voice/       chat, session, microphone, speech_to_text, text_to_speech, wake_word, hotkey
-  safety/      policy, approvals, audit
-  monitoring/  events, metrics, tracing
-  cli/         chat, display (text chat mode only)
+  safety/      policy + rules.toml, audit
+  monitoring/  events, tracing, metrics + pricing.toml
+  cli/         chat, display
 tests/         flat test files (fake LLM, real PowerShell, files, hotkey, headless browser)
 docs/          Product.md (vision and phases), Progress.md (what is built)
 ```

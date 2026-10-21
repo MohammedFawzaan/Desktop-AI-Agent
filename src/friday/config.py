@@ -1,3 +1,5 @@
+"""Settings, read from environment variables or the .env file. Only the API key is required."""
+
 from pathlib import Path
 
 from pydantic import SecretStr
@@ -8,21 +10,36 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     google_gemini_api_key: SecretStr
-    agent_model: str = "gemini-3.8-flash"
-    agent_fallback_models: list[str] = [
+
+    # Models: the agent tries them in order when one is unavailable.
+    agent_models: list[str] = [
+        "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.5-flash",
         "gemini-3.5-flash-lite",
     ]
-
-    # Voice (Gemini audio). The hotkey and data folder can be overridden in .env.
-    friday_hotkey: str = "ctrl+alt+f"
-    friday_data_dir: Path = Path.home() / ".friday"
-    stt_models: list[str] = ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
-    tts_models: list[str] = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"]
+    stt_model: str = "gemini-3.5-flash-lite"
+    tts_model: str = "gemini-3.8-flash-tts"
     tts_voice: str = "Kore"
+    request_timeout_s: float = 30.0
+
+    # Limits for one task.
+    max_llm_calls: int = 40
+    max_turns_per_step: int = 15
+    max_step_retries: int = 2
+    max_replans: int = 2
+    task_timeout_s: float = 900.0
+
+    # Voice.
+    friday_hotkey: str = "ctrl+alt+f"
+    mic_device: str | None = None  # index or part of a name; default: the Windows default mic
+
+    # App and browser control.
     gui_enabled: bool = True
     browser_enabled: bool = True
-    browser_channels: list[str] = ["chrome", "msedge"]  # installed browsers to drive
+    browser_channels: list[str] = ["chrome", "msedge"]  # installed browsers to try, in order
     browser_headless: bool = False
-    mic_device: str | None = None  # index or part of a name; default = Windows default mic
+
+    # Where Friday keeps its files (browser profile, speech model) and its logs.
+    friday_data_dir: Path = Path.home() / ".friday"
+    runs_dir: Path = Path("runs")
